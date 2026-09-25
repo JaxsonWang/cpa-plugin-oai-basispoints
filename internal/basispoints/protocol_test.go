@@ -84,8 +84,8 @@ func TestTransportCodeUsesToolAndArgsAndPreservesNativeItem(t *testing.T) {
 		})),
 	}
 	response := map[string]any{"output": []any{native}}
-	call, ok := extractNativeClientToolCall(native, clientToolSpecs(source))
-	if !ok {
+	call, callErr := extractNativeClientToolCall(native, clientToolSpecs(source))
+	if callErr != nil {
 		t.Fatal("transport call was not decoded")
 	}
 	if call["name"] != "get_weather" || call["call_id"] != "call_native_weather" {

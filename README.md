@@ -39,6 +39,20 @@ make test
 make build
 ```
 
+## 本地测试版（0.1.10-dev）
+
+本版针对 issues #3、#6、#7、#8、#9、#10 修正协议边界与错误处理；未发布到插件商店。
+
+- **普通与 Fast 档位**：未指定、`null`、`auto`、`default` 使用普通模式，不向 Basis Points 发送其拒绝的 `service_tier` 字段。`priority` / `fast` / `flex` 等其他值返回 400；模型目录不再声明 Fast，不能理解为已支持加速。
+- **工具格式错误**：仅在输出交付前，针对无效中转载荷最多重新生成一次；不猜测修补 JSON、不执行畸形调用、不交付半条成功结果。仍失败时返回 `422 invalid_tool_call`，附原因类别和可用的 JSON 字节偏移，不包含参数正文。当前 CPA JSON ABI 没有请求级错误标志，因此使用其不会冷却凭据的 422；此错误来自模型输出，不表示 OAuth 失效。重生成可能增加一次上游用量，返回的 `usage` 仍为最终 Response 的原始用量。
+- **Claude Code / Anthropic Messages**：仍未实现完整协议转换。对本插件模型的 `/v1/messages` 请求在认证选择前返回明确 400；不再落入宿主的协议选择 500 和后续凭据冷却。不影响原生 Codex 模型的路由，也不虚报 `claude` 格式支持。
+- **非流式**：按上游实际正文解析 JSON 或 SSE，返回完整 Response JSON，保留输出、状态与用量；HTML、空正文、流错误和缺失终态仍明确失败，并提供安全的响应类型/长度诊断。没有捕获原线上失败请求的 Basis Points 原始正文，因此不能将此项组件修复等同于线上 #8 已根治。
+- **独立压缩与 ID 续接**：`/responses/compact` 及非 `null` 的 `previous_response_id` 返回明确 400。继续使用 `/responses` 并回传完整消息、工具调用及结果历史；不会把普通回答冒充压缩结果，也不会静默丢弃续接 ID。这不是新增独立压缩或 ID 续接能力。
+
+流式路径仍全量缓冲上游结果，然后回放合法 SSE；终态校验和最多一次重生成在返回客户端响应前完成，保留 HTTP 错误状态。不会把 `incomplete` 改成 `completed`。
+
+本地验收区分：Go 回归、原版 CPA 加载同源码 macOS 动态库的真实 HTTP/CLI 链路测试（上游为明确标注的合成夹具）、现有线上服务对照。Linux `.so` 的目标系统加载及真实 Basis Points 推理需手动验收，未将本测试版部署到线上。
+
 ## 协议边界
 
 - 上游请求始终带 `Authorization: Bearer <access_token>`、`chatgpt-account-id`、`x-openai-account-id` 和 `x-basispoints-auth-mode: chatgpt`。

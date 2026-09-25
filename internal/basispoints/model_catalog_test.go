@@ -73,11 +73,11 @@ func TestModelCatalogRepairsLegacyHostResponse(t *testing.T) {
 	if err := json.Unmarshal(models[1]["service_tiers"], &tiers); err != nil {
 		t.Fatal(err)
 	}
-	if len(tiers) != 1 || tiers[0].ID != "priority" || tiers[0].Name != "Fast" || strings.Contains(tiers[0].Description, "2x") {
-		t.Fatalf("incorrect priority capability: %v", tiers)
+	if len(tiers) != 0 {
+		t.Fatalf("unsupported speed tiers advertised: %v", tiers)
 	}
-	if string(models[1]["additional_speed_tiers"]) != `["fast"]` {
-		t.Fatal("inconsistent speed tiers")
+	if string(models[1]["additional_speed_tiers"]) != "[]" {
+		t.Fatal("Fast still advertised")
 	}
 	again, err := svc.Handle("response.intercept_after", jsonBytes(catalogRequest(reply.Body)))
 	if err != nil || len(again.(map[string]any)) != 0 {

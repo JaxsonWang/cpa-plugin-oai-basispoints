@@ -74,12 +74,9 @@ func (s *Service) interceptModelCatalog(raw json.RawMessage) (any, error) {
 		} else {
 			delete(model, "effective_context_window_percent")
 		}
-		// 这里只声明可请求 priority，不沿用原生模型的倍速或计费承诺。
-		model["service_tiers"] = jsonBytes([]any{map[string]any{
-			"id": "priority", "name": "Fast",
-			"description": "Request priority processing; availability depends on Basis Points.",
-		}})
-		model["additional_speed_tiers"] = jsonBytes([]string{"fast"})
+		// 规范模型的 Fast 能力不能当作 Basis Points 通道的能力。
+		model["service_tiers"] = jsonBytes([]any{})
+		model["additional_speed_tiers"] = jsonBytes([]string{})
 		updated, err := json.Marshal(model)
 		if err != nil {
 			return nil, err

@@ -3,6 +3,7 @@ package basispoints
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -103,6 +104,10 @@ func (s *Service) Handle(method string, raw json.RawMessage) (any, error) {
 		return authRefresh(raw)
 	case "model.register", "model.static", "model.for_auth":
 		return modelRegistration(s.config()), nil
+	case "request.intercept_before":
+		return s.interceptUnsupportedProtocol(raw)
+	case "request.intercept_after":
+		return map[string]any{}, nil
 	case "response.intercept_after":
 		return s.interceptModelCatalog(raw)
 	case "executor.execute":
@@ -141,71 +146,89 @@ func (s *Service) execute(raw json.RawMessage, stream bool) (any, error) {
 	if stream {
 		return s.executeStream(request, body, credential)
 	}
-	response, err := s.upstreamRequest(request, body, credential, false)
+	payload, _, headers, err := s.executeResponse(request, body, credential, false)
 	if err != nil {
 		return nil, err
 	}
+	return map[string]any{"Payload": payload, "Headers": headers}, nil
+}
+
+// 在交付任何客户端数据前完成全量校验，畸形调用只允许重生成一次。
+func (s *Service) executeResponse(request ExecutorRequest, body map[string]any, credential credential, stream bool) ([]byte, map[string]any, http.Header, error) {
 	source, err := rawObject(request.OriginalRequest)
 	if err != nil {
 		source, err = rawObject(request.Payload)
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	transformed, _, _, err := transformResponseBody(response.Body, source)
-	if err != nil {
-		return nil, err
+	for attempt := 0; attempt < 2; attempt++ {
+		var raw []byte
+		var headers http.Header
+		if stream {
+			upstream, openErr := s.upstreamStream(request, body, credential)
+			if openErr != nil {
+				return nil, nil, nil, openErr
+			}
+			headers = upstream.Headers
+			raw, err = s.readUpstreamStream(upstream)
+		} else {
+			upstream, openErr := s.upstreamRequest(request, body, credential, false)
+			if openErr != nil {
+				return nil, nil, nil, openErr
+			}
+			headers, raw = upstream.Headers, upstream.Body
+		}
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if len(raw) > s.config().MaxResponseBytes {
+			return nil, nil, nil, fail(502, "upstream_response_too_large", "Basis Points response exceeds configured limit")
+		}
+		response, parseErr := parseResponse(raw, headers)
+		if parseErr != nil {
+			return nil, nil, nil, parseErr
+		}
+		payload, transformed, _, transformErr := transformResponseBody(jsonBytes(response), source)
+		if transformErr == nil {
+			// 结果已重新编码，不能继续使用上游 SSE/压缩/长度等实体头。
+			resultHeaders := headers.Clone()
+			if resultHeaders == nil {
+				resultHeaders = make(http.Header)
+			}
+			resultHeaders.Set("Content-Type", "application/json")
+			for _, name := range []string{"Content-Length", "Content-Encoding", "Transfer-Encoding", "ETag"} {
+				resultHeaders.Del(name)
+			}
+			return payload, transformed, resultHeaders, nil
+		}
+		var apiError *APIError
+		if !errors.As(transformErr, &apiError) || apiError.Kind != "invalid_tool_call" || attempt != 0 || response["status"] == "incomplete" {
+			return nil, nil, nil, transformErr
+		}
+		retry := cloneObject(body)
+		items, _ := body["input"].([]any)
+		retry["input"] = appendBeforeCompaction(append([]any{}, items...), []any{messageItem("developer", transportRetryHint+" Diagnostic: "+apiError.Message)})
+		body = retry
 	}
-	return map[string]any{
-		"Payload": transformed,
-		"Headers": response.Headers,
-	}, nil
+	return nil, nil, nil, relayError("retry_exhausted")
 }
 
 func (s *Service) executeStream(request ExecutorRequest, body map[string]any, credential credential) (any, error) {
 	if request.StreamID == "" {
 		return nil, fail(500, "stream_id_missing", "executor.execute_stream requires stream_id")
 	}
-	upstream, err := s.upstreamStream(request, body, credential)
+	// 宿主 stream.close 只接受错误字符串；先验证再返回，保留 RPC HTTP 状态。
+	_, response, _, err := s.executeResponse(request, body, credential, true)
 	if err != nil {
 		return nil, err
 	}
 	go func() {
-		closeWithError := func(err error) {
-			payload := map[string]any{"stream_id": request.StreamID}
-			if err != nil {
-				payload["error"] = safeError(err)
-			}
-			_ = s.call("host.stream.close", payload, nil)
+		payload := map[string]any{"stream_id": request.StreamID}
+		if emitErr := s.call("host.stream.emit", map[string]any{"stream_id": request.StreamID, "payload": syntheticStream(response)}, nil); emitErr != nil {
+			payload["error"] = "client disconnected while receiving stream"
 		}
-		raw, readErr := s.readUpstreamStream(upstream)
-		if readErr != nil {
-			closeWithError(readErr)
-			return
-		}
-		source, parseErr := rawObject(request.OriginalRequest)
-		if parseErr != nil {
-			source, parseErr = rawObject(request.Payload)
-		}
-		if parseErr != nil {
-			closeWithError(parseErr)
-			return
-		}
-		response, parseErr := parseFinalStreamResponse(raw)
-		if parseErr != nil {
-			closeWithError(parseErr)
-			return
-		}
-		_, transformedResponse, _, transformErr := transformResponseBody(jsonBytes(response), source)
-		if transformErr != nil {
-			closeWithError(transformErr)
-			return
-		}
-		if emitErr := s.call("host.stream.emit", map[string]any{"stream_id": request.StreamID, "payload": syntheticStream(transformedResponse)}, nil); emitErr != nil {
-			closeWithError(fail(499, "client_disconnected", "client disconnected while receiving stream"))
-			return
-		}
-		closeWithError(nil)
+		_ = s.call("host.stream.close", payload, nil)
 	}()
 	return map[string]any{"Headers": map[string][]string{"Content-Type": {"text/event-stream"}, "Cache-Control": {"no-cache"}}}, nil
 }
@@ -254,6 +277,7 @@ func registration(cfg Config) map[string]any {
 			"executor_model_scope":    "both",
 			"executor_input_formats":  []string{"openai-response"},
 			"executor_output_formats": []string{"openai-response"},
+			"request_interceptor":     true,
 			"response_interceptor":    true,
 			"management_api":          false,
 		},

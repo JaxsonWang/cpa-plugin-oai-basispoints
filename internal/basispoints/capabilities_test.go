@@ -96,36 +96,6 @@ func TestAuthParseRejectsMalformedNativeStorage(t *testing.T) {
 	}
 }
 
-func TestPrepareRequestPreservesServiceTier(t *testing.T) {
-	for _, tier := range []string{"", "auto", "default", "priority", "flex"} {
-		t.Run("tier_"+tier, func(t *testing.T) {
-			source := map[string]any{"model": DefaultModelID, "input": "Reply OK"}
-			if tier != "" {
-				source["service_tier"] = tier
-			}
-			raw := jsonBytes(source)
-			for _, original := range []bool{true, false} {
-				request := ExecutorRequest{Model: DefaultModelID, Payload: raw, StorageJSON: jsonBytes(map[string]any{"access_token": "test-access", "account_id": "test-account"})}
-				if original {
-					request.OriginalRequest = raw
-				}
-				body, _, err := NewService().prepareRequest(request)
-				if err != nil {
-					t.Fatal(err)
-				}
-				got, exists := body["service_tier"]
-				if tier == "" {
-					if exists {
-						t.Fatalf("default request unexpectedly sets service_tier: %v", got)
-					}
-				} else if !exists || got != tier {
-					t.Fatalf("service_tier = %v, want %q", got, tier)
-				}
-			}
-		})
-	}
-}
-
 func TestModelRegistrationUsesExistingResponseInterceptor(t *testing.T) {
 	cfg := defaultConfig()
 	capabilities := registration(cfg)["capabilities"].(map[string]any)

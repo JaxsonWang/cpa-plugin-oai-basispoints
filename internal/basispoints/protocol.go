@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -506,6 +507,13 @@ func prependBeforeCompaction(items []any, prefix []any) []any {
 }
 
 func prepareResponsesBody(source map[string]any, cfg Config) (map[string]any, error) {
+	if previous, exists := source["previous_response_id"]; exists && previous != nil {
+		return nil, fail(400, "unsupported_continuation", "oai-basispoints does not support previous_response_id; omit it and send the complete input history, including tool calls and results")
+	}
+	// 已验证的上游普通模式不接受 service_tier，不能将 Fast 静默降级。
+	if tier := source["service_tier"]; tier != nil && tier != "auto" && tier != "default" {
+		return nil, fail(400, "unsupported_service_tier", "oai-basispoints supports only the standard service tier; omit service_tier or use auto/default; Fast/priority is not supported")
+	}
 	model := stringValue(source["model"])
 	upstream, ok := cfg.resolveUpstreamModel(model)
 	if !ok {
@@ -539,9 +547,6 @@ func prepareResponsesBody(source map[string]any, cfg Config) (map[string]any, er
 		if entries, isArray := policy.([]any); !isArray || len(entries) > 0 {
 			output["context_management"] = policy
 		}
-	}
-	if tier, exists := source["service_tier"]; exists {
-		output["service_tier"] = tier
 	}
 	if cacheKey := explicitConversationKey(source); cacheKey != "" {
 		output["prompt_cache_key"] = cacheKey
@@ -590,56 +595,77 @@ func reasoningEffortFromSource(source map[string]any) string {
 	return normalizeEffort(source["reasoning_effort"])
 }
 
-func decodeTransportCode(value any) map[string]any {
-	return parseArguments(value)
-}
-
 func isTransportName(name string) bool {
 	return name == transportName || name == transportAlias
 }
 
 func parseArguments(value any) map[string]any {
+	object, _ := parseRelayObject(value)
+	return object
+}
+
+// 诊断只返回类别及偏移，不包含工具参数、补丁正文或认证信息。
+func parseRelayObject(value any) (map[string]any, string) {
 	if object := objectValue(value); object != nil {
-		return object
+		return object, ""
 	}
 	text, ok := value.(string)
-	if !ok || strings.TrimSpace(text) == "" {
-		return nil
+	if !ok {
+		return nil, "not_object_or_json_string"
 	}
 	var object map[string]any
 	decoder := json.NewDecoder(strings.NewReader(text))
 	decoder.UseNumber()
-	if decoder.Decode(&object) != nil {
-		return nil
+	if err := decoder.Decode(&object); err != nil {
+		var syntax *json.SyntaxError
+		if errors.As(err, &syntax) {
+			return nil, fmt.Sprintf("invalid_json byte_offset=%d", syntax.Offset)
+		}
+		return nil, "invalid_json_object"
 	}
-	// 一次调用只能包含一个 JSON 对象，不能静默忽略尾随内容。
+	if object == nil {
+		return nil, "null_object"
+	}
 	var extra any
 	if decoder.Decode(&extra) != io.EOF {
-		return nil
+		return nil, "trailing_content"
 	}
-	return object
+	return object, ""
 }
 
-func transportEnvelope(native map[string]any) map[string]any {
+func relayError(reason string) error {
+	// CPA v7.3.17 的 JSON ABI 没有 request-scoped 标志；422 不会冷却凭据。
+	return fail(422, "invalid_tool_call", "Basis Points returned an invalid client tool relay: "+reason)
+}
+
+func transportEnvelope(native map[string]any) (map[string]any, error) {
 	if stringValue(native["type"]) != "function_call" || !isTransportName(stringValue(native["name"])) {
-		return nil
+		return nil, relayError("outer_not_transport")
 	}
-	arguments := parseArguments(native["arguments"])
-	if arguments == nil {
-		return nil
+	arguments, reason := parseRelayObject(native["arguments"])
+	if reason != "" {
+		return nil, relayError("outer_arguments " + reason)
 	}
-	envelope := decodeTransportCode(arguments["code"])
-	for depth := 0; depth < 2 && envelope != nil && isTransportName(stringValue(envelope["name"])); depth++ {
-		nestedArguments := parseArguments(envelope["arguments"])
-		if nestedArguments == nil {
-			return nil
+	for depth := 0; ; depth++ {
+		code, ok := arguments["code"].(string)
+		if !ok {
+			return nil, relayError("code_not_string")
 		}
-		envelope = decodeTransportCode(nestedArguments["code"])
+		envelope, reason := parseRelayObject(code)
+		if reason != "" {
+			return nil, relayError("code " + reason)
+		}
+		if !isTransportName(stringValue(envelope["name"])) {
+			return envelope, nil
+		}
+		if depth >= 2 {
+			return nil, relayError("nested_transport_depth")
+		}
+		arguments, reason = parseRelayObject(envelope["arguments"])
+		if reason != "" {
+			return nil, relayError("nested_arguments " + reason)
+		}
 	}
-	if envelope != nil && isTransportName(stringValue(envelope["name"])) {
-		return nil
-	}
-	return envelope
 }
 
 func schemaMatches(value any, schema map[string]any) bool {
@@ -731,25 +757,25 @@ func schemaMatches(value any, schema map[string]any) bool {
 	return true
 }
 
-func extractNativeClientToolCall(native map[string]any, specs map[string]toolSpec) (map[string]any, bool) {
-	inner := transportEnvelope(native)
-	if inner == nil {
-		return nil, false
+func extractNativeClientToolCall(native map[string]any, specs map[string]toolSpec) (map[string]any, error) {
+	inner, err := transportEnvelope(native)
+	if err != nil {
+		return nil, err
 	}
 	name := stringValue(inner["tool"])
 	if name == "" {
 		name = stringValue(inner["name"])
 	}
 	if name == "" || isTransportName(name) {
-		return nil, false
+		return nil, relayError("invalid_inner_tool")
 	}
 	spec, exists := specs[name]
 	if !exists {
-		return nil, false
+		return nil, relayError("tool_not_in_catalog")
 	}
 	callID := stringValue(native["call_id"])
 	if callID == "" {
-		return nil, false
+		return nil, relayError("missing_call_id")
 	}
 	result := map[string]any{
 		"type":    "function_call",
@@ -769,7 +795,7 @@ func extractNativeClientToolCall(native map[string]any, specs map[string]toolSpe
 			input = inner["args"]
 		}
 		if _, ok := input.(string); !ok {
-			return nil, false
+			return nil, relayError("custom_args_not_string")
 		}
 		result["type"] = "custom_tool_call"
 		result["input"] = input
@@ -778,14 +804,17 @@ func extractNativeClientToolCall(native map[string]any, specs map[string]toolSpe
 		if arguments == nil {
 			arguments = inner["arguments"]
 		}
-		parsed := parseArguments(arguments)
-		if parsed == nil || !schemaMatches(parsed, firstMap(spec.Spec, "parameters", "inputSchema", "input_schema")) {
-			return nil, false
+		parsed, reason := parseRelayObject(arguments)
+		if reason != "" {
+			return nil, relayError("arguments " + reason)
+		}
+		if !schemaMatches(parsed, firstMap(spec.Spec, "parameters", "inputSchema", "input_schema")) {
+			return nil, relayError("arguments_schema_mismatch")
 		}
 		result["arguments"] = string(jsonBytes(parsed))
 		result["status"] = "completed"
 	}
-	return result, true
+	return result, nil
 }
 
 func transformResponseBody(body []byte, source map[string]any) ([]byte, map[string]any, bool, error) {
@@ -794,6 +823,10 @@ func transformResponseBody(body []byte, source map[string]any) ([]byte, map[stri
 	decoder.UseNumber()
 	if err := decoder.Decode(&response); err != nil || response == nil {
 		return nil, nil, false, fail(502, "invalid_upstream_response", "Basis Points returned invalid JSON")
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return nil, nil, false, fail(502, "invalid_upstream_response", "Basis Points returned trailing response data")
 	}
 	output, _ := response["output"].([]any)
 	specs := callableClientToolSpecs(source)
@@ -806,14 +839,14 @@ func transformResponseBody(body []byte, source map[string]any) ([]byte, map[stri
 			replaced = append(replaced, value)
 			continue
 		}
-		call, ok := extractNativeClientToolCall(item, specs)
-		if !ok {
+		call, err := extractNativeClientToolCall(item, specs)
+		if err != nil {
 			// 不把服务器注入工具或损坏的中转载荷交给客户端执行。
-			return nil, nil, false, fail(502, "invalid_tool_call", "Basis Points returned a tool call that does not match the client tool catalog or relay contract")
+			return nil, nil, false, err
 		}
 		callID := stringValue(call["call_id"])
 		if callIDs[callID] {
-			return nil, nil, false, fail(502, "invalid_tool_call", "Basis Points returned duplicate tool call IDs")
+			return nil, nil, false, relayError("duplicate_call_id")
 		}
 		callIDs[callID] = true
 		replaced = append(replaced, call)
@@ -821,12 +854,12 @@ func transformResponseBody(body []byte, source map[string]any) ([]byte, map[stri
 	}
 	if len(natives) == 0 {
 		if clientToolCallRequired(source) {
-			return nil, nil, false, fail(502, "invalid_tool_call", "Basis Points did not satisfy the required client tool_choice")
+			return nil, nil, false, relayError("required_tool_choice_not_satisfied")
 		}
 		return body, response, false, nil
 	}
 	if parallel, ok := source["parallel_tool_calls"].(bool); ok && !parallel && len(natives) > 1 {
-		return nil, nil, false, fail(502, "invalid_tool_call", "Basis Points returned multiple tool calls while parallel_tool_calls is false")
+		return nil, nil, false, relayError("parallel_tool_calls_disabled")
 	}
 	for _, native := range natives {
 		rememberNativeCall(native)
@@ -883,9 +916,11 @@ func syntheticStream(response map[string]any) []byte {
 			emit("response.output_item.done", map[string]any{"output_index": index, "item": item})
 		}
 	}
-	completed := cloneObject(response)
-	completed["status"] = "completed"
-	emit("response.completed", map[string]any{"response": completed})
+	terminalEvent := "response.completed"
+	if response["status"] == "incomplete" {
+		terminalEvent = "response.incomplete"
+	}
+	emit(terminalEvent, map[string]any{"response": response})
 	builder.WriteString("data: [DONE]\n\n")
 	return []byte(builder.String())
 }
