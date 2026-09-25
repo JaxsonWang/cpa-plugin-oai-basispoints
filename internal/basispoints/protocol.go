@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -62,7 +63,16 @@ func iterToolValues(tools any, namespace string, callback func(toolSpec)) {
 
 func clientToolSpecs(source map[string]any) map[string]toolSpec {
 	result := map[string]toolSpec{}
-	iterToolValues(source["tools"], "", func(spec toolSpec) { result[spec.Key] = spec })
+	add := func(spec toolSpec) { result[spec.Key] = spec }
+	iterToolValues(source["tools"], "", add)
+	// Codex 将动态工具目录放在输入历史中；后续声明覆盖同名工具。
+	items, _ := source["input"].([]any)
+	for _, value := range items {
+		item := objectValue(value)
+		if strings.EqualFold(strings.TrimSpace(stringValue(item["type"])), "additional_tools") {
+			iterToolValues(item["tools"], "", add)
+		}
+	}
 	return result
 }
 
@@ -127,10 +137,13 @@ func clientToolProtocolInstructions(source map[string]any) string {
 		return "This request is relayed by an external Responses API client, not by the live Excel workbook. Do not call server-injected Excel, Office, connector, or workbook tools. Return the answer as assistant text."
 	}
 	catalog := make([]string, 0, len(specs))
-	iterToolValues(source["tools"], "", func(spec toolSpec) {
-		if _, allowed := specs[spec.Key]; !allowed {
-			return
-		}
+	names := make([]string, 0, len(specs))
+	for name := range specs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		spec := specs[name]
 		line := "- " + spec.Key + " (" + spec.Type + ")"
 		if description := stringValue(spec.Spec["description"]); description != "" {
 			line += ": " + description
@@ -146,7 +159,7 @@ func clientToolProtocolInstructions(source map[string]any) string {
 			}
 		}
 		catalog = append(catalog, line)
-	})
+	}
 	catalogText := strings.Join(catalog, "\n")
 	if choice, exists := source["tool_choice"]; exists && choice != nil {
 		catalogText += "\nClient tool_choice: " + string(jsonBytes(choice))
@@ -385,7 +398,8 @@ func translateInputItems(rawInput any, allowed map[string]toolSpec) []any {
 			}
 			continue
 		}
-		if itemType == "item_reference" {
+		// 工具目录已转换为中继协议说明，不向上游注入另一份原生工具。
+		if itemType == "item_reference" || itemType == "additional_tools" {
 			continue
 		}
 		result = append(result, item)

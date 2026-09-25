@@ -1,5 +1,24 @@
 # 更新日志
 
+## v0.1.12 — 2026-09-25（UTC+8）
+
+- 仅修改插件：声明 CPA 已有的 `codex` 输入/输出格式，复用宿主 Claude↔Codex 转换；不新增私有转换器，不修改 CPA 主程序。
+- 修正转换请求误读 `OriginalRequest` 的问题，使用宿主规范化后的 `Payload` 进行上游请求、工具目录校验及历史回放。原生 Responses 路径保持原文处理。
+- 按宿主契约输出 Codex 非流式终态事件与逐条流式 data 事件，保留工具参数、完成/截断状态和用量。移除此前主动拒绝 Claude 的认证前拦截。
+- 移除独立 token 计数返回 0 的占位结果，改为明确的 `unsupported_token_count`，不伪造计数成功。
+- 独立 `/responses/compact`、`previous_response_id` 续接及 Fast/priority 仍未实现；之前修复的是错误处理及静默丢失风险，不是这些能力本身。上游流式仍全量缓冲后回放。
+- 包含此前未单独发布的 v0.1.11 修复：支持 Codex CLI 的 `input[].additional_tools`，统一工具目录、调用校验及历史回放，解决已复现的 `tool_not_in_catalog`。
+- 已完成原版 CPA v7.3.17 的 54 项隔离宿主检查，以及真实生产 Basis Points 验收；不需要修改 CPA 源码。
+- 生产验测：Claude Code 2.1.247 文本及 `Read → Write → Bash` 四轮工具调用通过；Claude HTTP 非流式/流式、工具回传、完整历史多轮以及 Codex CLI 0.156.1 工具回归通过。23 次记录的生产 API 请求均返回 200。
+- 验证边界：Codex 文本首测多输出句号，严格比对未通过；保留该记录，使用无歧义提示后的单次复测精确通过。上述验收不等于长时间压力、大上下文或全部多模态场景验证。
+
+## v0.1.11 — 2026-09-25（UTC+8）
+
+- 修复 Codex CLI 将工具定义放在 `input[].additional_tools` 时出现的 `tool_not_in_catalog`：合并顶层及输入内工具声明，并统一目录、调用校验与历史回放。
+- 保留 function/custom 工具命名空间及 `tool_choice` 约束；同名工具使用后续声明，避免目录与校验规则不一致。
+- 转换后的上游请求移除原始 `additional_tools`，仅通过已有中继协议传递客户端工具。
+- 本次未新增 Claude/Anthropic Messages、Fast、独立压缩或 ID 续接能力；部署及真实客户端验收结果另附。
+
 ## v0.1.10 — 2026-09-25（UTC+8）
 
 - #3：移除 Fast 能力声明；普通档位不发送 `service_tier`，显式优先档位明确拒绝。

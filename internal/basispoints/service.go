@@ -104,10 +104,6 @@ func (s *Service) Handle(method string, raw json.RawMessage) (any, error) {
 		return authRefresh(raw)
 	case "model.register", "model.static", "model.for_auth":
 		return modelRegistration(s.config()), nil
-	case "request.intercept_before":
-		return s.interceptUnsupportedProtocol(raw)
-	case "request.intercept_after":
-		return map[string]any{}, nil
 	case "response.intercept_after":
 		return s.interceptModelCatalog(raw)
 	case "executor.execute":
@@ -115,7 +111,7 @@ func (s *Service) Handle(method string, raw json.RawMessage) (any, error) {
 	case "executor.execute_stream":
 		return s.execute(raw, true)
 	case "executor.count_tokens":
-		return map[string]any{"Payload": jsonBytes(map[string]any{"input_tokens": 0})}, nil
+		return nil, fail(400, "unsupported_token_count", "oai-basispoints does not provide an accurate standalone token count")
 	case "executor.http_request":
 		return nil, fail(400, "unsupported_method", "use the Basis Points model executor")
 	case "plugin.shutdown":
@@ -146,19 +142,19 @@ func (s *Service) execute(raw json.RawMessage, stream bool) (any, error) {
 	if stream {
 		return s.executeStream(request, body, credential)
 	}
-	payload, _, headers, err := s.executeResponse(request, body, credential, false)
+	payload, response, headers, err := s.executeResponse(request, body, credential, false)
 	if err != nil {
 		return nil, err
+	}
+	if request.Format == "codex" {
+		payload = codexTerminalResponse(response)
 	}
 	return map[string]any{"Payload": payload, "Headers": headers}, nil
 }
 
 // 在交付任何客户端数据前完成全量校验，畸形调用只允许重生成一次。
 func (s *Service) executeResponse(request ExecutorRequest, body map[string]any, credential credential, stream bool) ([]byte, map[string]any, http.Header, error) {
-	source, err := rawObject(request.OriginalRequest)
-	if err != nil {
-		source, err = rawObject(request.Payload)
-	}
+	source, err := executorSource(request)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -225,8 +221,11 @@ func (s *Service) executeStream(request ExecutorRequest, body map[string]any, cr
 	}
 	go func() {
 		payload := map[string]any{"stream_id": request.StreamID}
-		if emitErr := s.call("host.stream.emit", map[string]any{"stream_id": request.StreamID, "payload": syntheticStream(response)}, nil); emitErr != nil {
-			payload["error"] = "client disconnected while receiving stream"
+		for _, frame := range executorStreamPayloads(request.Format, response) {
+			if emitErr := s.call("host.stream.emit", map[string]any{"stream_id": request.StreamID, "payload": frame}, nil); emitErr != nil {
+				payload["error"] = "client disconnected while receiving stream"
+				break
+			}
 		}
 		_ = s.call("host.stream.close", payload, nil)
 	}()
@@ -275,9 +274,8 @@ func registration(cfg Config) map[string]any {
 			"model_provider":          true,
 			"executor":                true,
 			"executor_model_scope":    "both",
-			"executor_input_formats":  []string{"openai-response"},
-			"executor_output_formats": []string{"openai-response"},
-			"request_interceptor":     true,
+			"executor_input_formats":  []string{"openai-response", "codex"},
+			"executor_output_formats": []string{"openai-response", "codex"},
 			"response_interceptor":    true,
 			"management_api":          false,
 		},

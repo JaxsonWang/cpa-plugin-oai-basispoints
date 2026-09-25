@@ -26,11 +26,7 @@ func (s *Service) prepareRequest(request ExecutorRequest) (map[string]any, crede
 	if !c.ExpiresAt.IsZero() && !time.Now().Before(c.ExpiresAt) {
 		return nil, credential{}, fail(401, "auth_expired", "ChatGPT OAuth access token has expired")
 	}
-	body := request.OriginalRequest
-	if len(body) == 0 {
-		body = request.Payload
-	}
-	source, err := rawObject(body)
+	source, err := executorSource(request)
 	if err != nil {
 		return nil, credential{}, err
 	}
