@@ -19,15 +19,7 @@ func TestNamespacedToolCallPreservesNamespace(t *testing.T) {
 			},
 		}},
 	}}}
-	native := map[string]any{
-		"type": "function_call", "name": transportName,
-		"id": "fc_namespace_repro", "call_id": "call_namespace_repro",
-		"arguments": string(jsonBytes(map[string]any{
-			"code": string(jsonBytes(map[string]any{
-				"tool": "mcp__node_repl.js", "args": map[string]any{"code": "nodeRepl.write('ok')"},
-			})),
-		})),
-	}
+	native := namespaceTestNative("namespace_repro", "mcp__node_repl.js", map[string]any{"code": "nodeRepl.write('ok')"})
 	call, callErr := extractNativeClientToolCall(native, clientToolSpecs(source))
 	if callErr != nil {
 		t.Fatal("namespaced tool was not decoded")
@@ -57,13 +49,20 @@ func namespaceTestSource(toolType, name, namespace string) map[string]any {
 	return map[string]any{"tools": []any{tool}}
 }
 
+func relayTestPayload(args any) string {
+	if text, ok := args.(string); ok {
+		return text
+	}
+	return string(jsonBytes(args))
+}
+
 func namespaceTestNative(id, key string, args any) map[string]any {
 	return map[string]any{
 		"type": "function_call", "name": transportName,
 		"id": "fc_" + id, "call_id": "call_" + id, "status": "completed",
 		"summary": "Relay a client tool", "references": []any{"client"},
 		"arguments": string(jsonBytes(map[string]any{
-			"code": string(jsonBytes(map[string]any{"tool": key, "args": args})),
+			"code": relayTestPayload(args), "references": []any{key},
 		})),
 	}
 }
@@ -131,7 +130,7 @@ func TestClientToolIdentityAndReplay(t *testing.T) {
 						t.Fatalf("native replay changed: %#v", replayedCall)
 					}
 					envelope, _ := transportEnvelope(replayedCall)
-					if envelope["tool"] != key || !reflect.DeepEqual(envelope["args"], args) {
+					if envelope["tool"] != key || envelope["args"] != relayTestPayload(args) {
 						t.Fatalf("replay envelope = %#v", envelope)
 					}
 					if replayedOutput["type"] != "function_call_output" || replayedOutput["call_id"] != replayedCall["call_id"] || !reflect.DeepEqual(replayedOutput["output"], output) {
@@ -182,7 +181,7 @@ func TestClientToolArgumentsPreserveLargeIntegers(t *testing.T) {
 	}
 	call["call_id"] = "call_uncached_" + t.Name()
 	replay := translateInputItems([]any{call}, clientToolSpecs(source))
-	if envelope, _ := transportEnvelope(objectValue(replay[0])); !reflect.DeepEqual(envelope["args"], args) {
+	if envelope, _ := transportEnvelope(objectValue(replay[0])); envelope["args"] != relayTestPayload(args) {
 		t.Fatalf("replay lost integer precision: %#v", envelope)
 	}
 }
@@ -217,6 +216,9 @@ func TestClientToolRejectsInvalidCallsWithoutLeakingNativeTools(t *testing.T) {
 				source["tool_choice"] = "none"
 			case "custom-object":
 				source = namespaceTestSource("custom", "js", "mcp__node_repl")
+				outer := parseArguments(native["arguments"])
+				outer["code"] = map[string]any{"private": "not raw text"}
+				native["arguments"] = string(jsonBytes(outer))
 			}
 			output[0] = native
 			body, response, changed, err := transformResponseBody(jsonBytes(map[string]any{"output": output}), source)

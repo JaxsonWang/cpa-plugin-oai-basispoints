@@ -14,20 +14,32 @@ import (
 
 func relayFixture(id string, broken bool) (map[string]any, string) {
 	patch := "*** Begin Patch" + string(rune(10)) + `+await page.locator('[data-id="1"]').click();` + string(rune(10)) + "*** End Patch"
-	code := string(jsonBytes(map[string]any{"tool": "apply_patch", "args": patch}))
+	code, tool := patch, "apply_patch"
 	if broken {
+		// 自定义输入不再解析为 JSON；函数参数仍严格拒绝漏转义。
+		tool = "exec_command"
+		code = string(jsonBytes(map[string]any{"cmd": patch}))
 		code = strings.ReplaceAll(code, string([]byte{92, 34}), string(rune(34)))
 	}
-	return map[string]any{"type": "function_call", "name": transportName, "call_id": id, "arguments": string(jsonBytes(map[string]any{"code": code}))}, patch
+	return map[string]any{
+		"type": "function_call", "name": transportName, "call_id": id,
+		"arguments": string(jsonBytes(map[string]any{"code": code, "references": []any{tool}})),
+	}, patch
 }
 
 func TestRelayRegenerationHTTP(t *testing.T) {
 	for _, stream := range []bool{false, true} {
-		for _, mode := range []string{"valid", "recover", "exhausted", "upstream_error", "nonstream_sse"} {
+		for _, mode := range []string{"valid", "recover", "exhausted", "legacy_recover", "legacy_exhausted", "upstream_error", "nonstream_sse"} {
 			t.Run(fmt.Sprintf("stream=%t/%s", stream, mode), func(t *testing.T) {
 				attempts := 0
 				bad, _ := relayFixture(t.Name()+"-bad", true)
 				good, patch := relayFixture(t.Name()+"-good", false)
+				if strings.HasPrefix(mode, "legacy_") {
+					// 旧格式的新输出不猜测修补，由既有有界重生成切换到当前协议。
+					code := string(jsonBytes(map[string]any{"tool": "apply_patch", "args": patch}))
+					code = strings.ReplaceAll(code, string([]byte{92, 34}), string(rune(34)))
+					bad["arguments"] = string(jsonBytes(map[string]any{"code": code, "references": []any{}}))
+				}
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					attempts++
 					var sent map[string]any
@@ -49,7 +61,7 @@ func TestRelayRegenerationHTTP(t *testing.T) {
 						return
 					}
 					native := good
-					if mode == "exhausted" || (mode == "recover" && attempts == 1) {
+					if strings.HasSuffix(mode, "exhausted") || (strings.HasSuffix(mode, "recover") && attempts == 1) {
 						native = bad
 					}
 					response := map[string]any{"id": "resp_local_fixture", "status": "completed", "output": []any{native}, "usage": map[string]any{"total_tokens": 17}}
@@ -108,7 +120,7 @@ func TestRelayRegenerationHTTP(t *testing.T) {
 					}
 					return nil
 				})
-				src := map[string]any{"model": DefaultModelID, "input": "Apply patch", "tools": []any{map[string]any{"type": "custom", "name": "apply_patch"}}}
+				src := map[string]any{"model": DefaultModelID, "input": "Apply patch", "tools": []any{map[string]any{"type": "custom", "name": "apply_patch"}, map[string]any{"type": "function", "name": "exec_command", "parameters": map[string]any{"type": "object"}}}}
 				req := ExecutorRequest{Model: DefaultModelID, Payload: jsonBytes(src), Stream: stream, StreamID: "client-fixture", StorageJSON: jsonBytes(map[string]any{"access_token": "fixture", "account_id": "fixture"})}
 				method := "executor.execute"
 				if stream {
@@ -116,7 +128,7 @@ func TestRelayRegenerationHTTP(t *testing.T) {
 				}
 				result, err := svc.Handle(method, jsonBytes(req))
 				wantAttempts := 1
-				if mode == "recover" || mode == "exhausted" {
+				if strings.HasSuffix(mode, "recover") || strings.HasSuffix(mode, "exhausted") {
 					wantAttempts = 2
 				}
 				if attempts != wantAttempts {
@@ -125,7 +137,7 @@ func TestRelayRegenerationHTTP(t *testing.T) {
 				if stream && closes != attempts {
 					t.Fatalf("streams leaked: closes=%d attempts=%d", closes, attempts)
 				}
-				if mode == "exhausted" || mode == "upstream_error" {
+				if strings.HasSuffix(mode, "exhausted") || mode == "upstream_error" {
 					api, ok := err.(*APIError)
 					wantStatus := 422
 					if mode == "upstream_error" {

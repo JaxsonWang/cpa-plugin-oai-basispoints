@@ -58,7 +58,7 @@ func TestPrepareResponsesBodyStripsToolsAndUsesNaturalLanguageCatalog(t *testing
 	}
 }
 
-func TestTransportCodeUsesToolAndArgsAndPreservesNativeItem(t *testing.T) {
+func TestTransportUsesReferencesAndPreservesNativeItem(t *testing.T) {
 	source := map[string]any{
 		"tools": []any{map[string]any{
 			"type": "function",
@@ -80,7 +80,7 @@ func TestTransportCodeUsesToolAndArgsAndPreservesNativeItem(t *testing.T) {
 		"references": []any{"Tokyo weather"},
 		"arguments": string(jsonBytes(map[string]any{
 			"summary": "Get current weather for Tokyo",
-			"code":    string(jsonBytes(map[string]any{"tool": "get_weather", "args": map[string]any{"city": "Tokyo"}})),
+			"code":    string(jsonBytes(map[string]any{"city": "Tokyo"})), "references": []any{"get_weather"},
 		})),
 	}
 	response := map[string]any{"output": []any{native}}
