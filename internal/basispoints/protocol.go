@@ -538,6 +538,12 @@ func prepareResponsesBody(source map[string]any, cfg Config) (map[string]any, er
 	if tier := source["service_tier"]; tier != nil && tier != "auto" && tier != "default" {
 		return nil, fail(400, "unsupported_service_tier", "oai-basispoints supports only the standard service tier; omit service_tier or use auto/default; Fast/priority is not supported")
 	}
+	if err := validateTextFormat(source["text"]); err != nil {
+		return nil, err
+	}
+	if err := validateAgentMessageEncryption(source["input"]); err != nil {
+		return nil, err
+	}
 	model := stringValue(source["model"])
 	upstream, ok := cfg.resolveUpstreamModel(model)
 	if !ok {
@@ -603,6 +609,55 @@ func prepareResponsesBody(source map[string]any, cfg Config) (map[string]any, er
 	}
 	output["metadata"] = metadata
 	return output, nil
+}
+
+// 代理密文不等于普通正文；不猜测解密、不丢失内容，也不影响原有 reasoning 密文。
+func validateAgentMessageEncryption(input any) error {
+	items, _ := input.([]any)
+	for _, value := range items {
+		item := objectValue(value)
+		if strings.ToLower(strings.TrimSpace(stringValue(item["type"]))) != "agent_message" {
+			continue
+		}
+		content, _ := item["content"].([]any)
+		for _, value := range content {
+			if stringValue(objectValue(value)["type"]) == "encrypted_content" {
+				return fail(400, "unsupported_encrypted_agent_message", "oai-basispoints does not implement encrypted agent_message content required by Codex multi-agent v2; refresh the model catalog and start a new session without a v2 override")
+			}
+		}
+	}
+	return nil
+}
+
+// 尚未接入结构化输出契约，不能丢弃格式后把普通正文当成成功结果。
+// verbosity 的上游契约仍待验证，本次不改变既有客户端的默认请求处理。
+func validateTextFormat(value any) error {
+	if value == nil {
+		return nil
+	}
+	text, ok := value.(map[string]any)
+	if !ok {
+		return fail(400, "invalid_text_config", "text must be an object")
+	}
+	value = text["format"]
+	if value == nil {
+		return nil
+	}
+	format, ok := value.(map[string]any)
+	if !ok {
+		return fail(400, "invalid_text_format", "text.format must be an object")
+	}
+	switch format["type"] {
+	case "text":
+		if len(format) != 1 {
+			return fail(400, "invalid_text_format", "plain text.format accepts only type")
+		}
+		return nil
+	case "json_object", "json_schema":
+		return fail(400, "unsupported_text_format", "oai-basispoints does not implement structured text.format output; omit the format or use type=text")
+	default:
+		return fail(400, "invalid_text_format", "text.format.type must be text, json_object, or json_schema")
+	}
 }
 
 func minInt(left, right int) int {

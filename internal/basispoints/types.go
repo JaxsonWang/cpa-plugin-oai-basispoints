@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	Version        = "0.1.14"
+	Version        = "0.1.17"
 	Provider       = "oai-basispoints"
 	AuthProviderID = "codex"
 	PluginID       = Provider

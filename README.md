@@ -41,6 +41,10 @@ make build
 
 ## 协议边界
 
+- Codex 模型目录为本插件别名同步对应规范模型的 `apply_patch_tool_type`，保留缺失与空值语义。更新后需让 Codex 刷新模型目录，再用新会话验测原生补丁及差异入口；不回填历史会话事件。
+- 客户端实验工具仅按对应规范模型开放已接入的时钟和异步提问；不声明尚未实现密文消息契约的多代理 v2。旧缓存或显式启用 v2 的请求若包含代理密文会明确返回 400，不会强转明文。不会批量复制 Code Mode、审核策略或未知实验工具，也不会改写客户端个人配置。
+- 结构化 `text.format`（`json_object` / `json_schema`）尚未实现，显式返回 400；不丢弃 Schema 后返回普通正文冒充成功。`text.verbosity` 的上游映射仍未实现，本版保留既有行为以避免默认请求回归，不宣称详细程度参数已生效。
+
 - 上游请求始终带 `Authorization: Bearer <access_token>`、`chatgpt-account-id`、`x-openai-account-id` 和 `x-basispoints-auth-mode: chatgpt`。
 - `turn_id` 按会话和当前用户 turn 稳定生成；工具结果回合只递增 `agent_iteration`，不会把同一 turn 重新当成新计划。
 - 工具中继通过外层 `references: [完整工具名]` 路由，`code` 只承载该工具的载荷：function 工具为参数 JSON 对象，custom 工具为逐字保留的原始文本。不要再套 `{tool,args}` 内层包装；插件不执行其中代码。已有会话的原生历史调用原样回放，新调用按本次注入的协议生成。

@@ -11,7 +11,7 @@ func catalogFixture(canonical, alias string) []byte {
 	return jsonBytes(map[string]any{
 		"future_counter": json.Number("9007199254740993"),
 		"models": []any{
-			map[string]any{"slug": canonical, "context_window": 272000, "max_context_window": 872000, "effective_context_window_percent": 95, "service_tiers": []any{map[string]any{"id": "priority", "description": "2x speed"}}},
+			map[string]any{"slug": canonical, "apply_patch_tool_type": "freeform", "context_window": 272000, "max_context_window": 872000, "effective_context_window_percent": 95, "service_tiers": []any{map[string]any{"id": "priority", "description": "2x speed"}}},
 			map[string]any{"slug": alias, "context_window": 272000, "max_context_window": 272000, "service_tiers": []any{}, "additional_speed_tiers": []string{"fast"}, "base_instructions": "keep alias instructions", "supported_reasoning_levels": []string{"ultra"}, "future_field": map[string]any{"counter": json.Number("9007199254740993")}},
 			map[string]any{"slug": "unrelated-basispoints", "context_window": 1000, "max_context_window": 1000, "service_tiers": []any{}},
 		},
@@ -55,7 +55,7 @@ func TestModelCatalogRepairsLegacyHostResponse(t *testing.T) {
 	if string(root["future_counter"]) != string(original["future_counter"]) {
 		t.Fatal("lost large integer precision")
 	}
-	for _, field := range []string{"context_window", "max_context_window", "effective_context_window_percent"} {
+	for _, field := range []string{"context_window", "max_context_window", "effective_context_window_percent", "apply_patch_tool_type"} {
 		if string(models[1][field]) != string(models[0][field]) {
 			t.Fatalf("canonical field not applied: %s", field)
 		}
@@ -154,6 +154,9 @@ func TestModelCatalogUsesConfiguredNamesAndPrefixes(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, models := decodedCatalog(t, result.(map[string]any)["Body"].([]byte))
+		if string(models[1]["apply_patch_tool_type"]) != `"freeform"` {
+			t.Fatal("configured alias patch tool not restored")
+		}
 		if string(models[1]["max_context_window"]) != "872000" {
 			t.Fatal("configured alias not repaired")
 		}
@@ -186,7 +189,18 @@ func TestModelCatalogRoutesEachMappedAlias(t *testing.T) {
 				if i%2 == 0 {
 					canonical["effective_context_window_percent"] = 90 + i
 				}
-				entries = append(entries, canonical, map[string]any{"slug": prefix + alias, "context_window": 1, "max_context_window": 1, "effective_context_window_percent": 1, "base_instructions": "keep alias instructions"})
+				switch i {
+				case 0:
+					canonical["apply_patch_tool_type"] = "freeform"
+					canonical["multi_agent_version"] = "v2"
+					canonical["multi_agent_reasoning_effort"] = "xhigh"
+					canonical["experimental_supported_tools"] = []string{"clock"}
+				case 1:
+					canonical["apply_patch_tool_type"] = nil
+					canonical["multi_agent_version"] = "v1"
+					canonical["experimental_supported_tools"] = []string{"send_user_message_async"}
+				}
+				entries = append(entries, canonical, map[string]any{"slug": prefix + alias, "apply_patch_tool_type": "freeform", "context_window": 1, "max_context_window": 1, "effective_context_window_percent": 1, "base_instructions": "keep alias instructions"})
 			}
 			before := jsonBytes(map[string]any{"models": entries})
 			result, err := svc.Handle("response.intercept_after", jsonBytes(catalogRequest(before)))
@@ -200,10 +214,17 @@ func TestModelCatalogRoutesEachMappedAlias(t *testing.T) {
 				if !reflect.DeepEqual(old[canonical], updated[canonical]) {
 					t.Fatal("native model metadata changed")
 				}
-				for _, field := range []string{"context_window", "max_context_window", "effective_context_window_percent"} {
+				for _, field := range []string{"context_window", "max_context_window", "effective_context_window_percent", "apply_patch_tool_type"} {
 					if !reflect.DeepEqual(updated[alias][field], old[canonical][field]) {
 						t.Fatalf("model %d has another model's %s", i, field)
 					}
+				}
+				wantTools := old[canonical]["experimental_supported_tools"]
+				if wantTools == nil {
+					wantTools = json.RawMessage(`[]`)
+				}
+				if !reflect.DeepEqual(updated[alias]["experimental_supported_tools"], wantTools) {
+					t.Fatalf("model %d inherited another model's experimental tools", i)
 				}
 				for _, field := range []string{"slug", "base_instructions"} {
 					if !reflect.DeepEqual(old[alias][field], updated[alias][field]) {
@@ -232,6 +253,129 @@ func TestModelCatalogMappedAliasRequiresOwnCanonical(t *testing.T) {
 		apiErr, ok := err.(*APIError)
 		if result != nil || !ok || apiErr.Kind != "model_metadata_missing" || !strings.Contains(err.Error(), prefix+svc.cfg.ModelMappings[alias]) {
 			t.Fatalf("missing mapped canonical was not reported: %v", err)
+		}
+	}
+}
+
+func TestModelCatalogMatchesCanonicalPatchCapability(t *testing.T) {
+	states := []struct {
+		name  string
+		value json.RawMessage
+	}{
+		{"missing", nil},
+		{"null", json.RawMessage(`null`)},
+		{"freeform", json.RawMessage(`"freeform"`)},
+	}
+	for _, canonical := range states {
+		for _, alias := range states {
+			t.Run(canonical.name+"/"+alias.name, func(t *testing.T) {
+				root, models := decodedCatalog(t, catalogFixture(DefaultUpstreamModel, DefaultModelID))
+				delete(models[0], "apply_patch_tool_type")
+				if canonical.value != nil {
+					models[0]["apply_patch_tool_type"] = canonical.value
+				}
+				if alias.value != nil {
+					models[1]["apply_patch_tool_type"] = alias.value
+				}
+				models[2]["apply_patch_tool_type"] = json.RawMessage(`"freeform"`)
+				root["models"] = jsonBytes(models)
+				svc := NewService()
+				result, err := svc.Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
+				if err != nil {
+					t.Fatal(err)
+				}
+				body := result.(map[string]any)["Body"].([]byte)
+				_, updated := decodedCatalog(t, body)
+				if !reflect.DeepEqual(updated[1]["apply_patch_tool_type"], canonical.value) {
+					t.Fatalf("alias patch capability = %s, want %s", updated[1]["apply_patch_tool_type"], canonical.value)
+				}
+				if !reflect.DeepEqual(models[0], updated[0]) || !reflect.DeepEqual(models[2], updated[2]) {
+					t.Fatal("changed another model's capabilities")
+				}
+				again, err := svc.Handle("response.intercept_after", jsonBytes(catalogRequest(body)))
+				if err != nil || len(again.(map[string]any)) != 0 {
+					t.Fatalf("not idempotent: %v %v", again, err)
+				}
+			})
+		}
+	}
+}
+
+func TestModelCatalogRestoresOnlySupportedClientCapabilities(t *testing.T) {
+	root, models := decodedCatalog(t, catalogFixture(DefaultUpstreamModel, DefaultModelID))
+	models[0]["multi_agent_version"] = json.RawMessage(`"v2"`)
+	models[0]["multi_agent_reasoning_effort"] = json.RawMessage(`"xhigh"`)
+	models[0]["experimental_supported_tools"] = json.RawMessage(`["clock","unknown_future_tool","send_user_message_async"]`)
+	models[0]["tool_mode"] = json.RawMessage(`"code_mode_only"`)
+	models[0]["node_repl_auto_review_required"] = json.RawMessage(`true`)
+	models[1]["node_repl_auto_review_required"] = json.RawMessage(`false`)
+	models[1]["experimental_supported_tools"] = json.RawMessage(`["stale_tool"]`)
+	root["models"] = jsonBytes(models)
+	svc := NewService()
+	result, err := svc.Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := result.(map[string]any)["Body"].([]byte)
+	_, updated := decodedCatalog(t, body)
+	for _, field := range []string{"multi_agent_version", "multi_agent_reasoning_effort"} {
+		if _, exists := updated[1][field]; exists {
+			t.Fatalf("unimplemented encrypted capability advertised: %s", field)
+		}
+	}
+	if string(updated[1]["experimental_supported_tools"]) != `["clock","send_user_message_async"]` {
+		t.Fatalf("unexpected client tools: %s", updated[1]["experimental_supported_tools"])
+	}
+	if _, exists := updated[1]["tool_mode"]; exists || string(updated[1]["node_repl_auto_review_required"]) != "false" {
+		t.Fatal("changed tool execution mode or approval policy")
+	}
+	if !reflect.DeepEqual(updated[0], models[0]) || !reflect.DeepEqual(updated[2], models[2]) {
+		t.Fatal("changed unrelated models")
+	}
+	again, err := svc.Handle("response.intercept_after", jsonBytes(catalogRequest(body)))
+	if err != nil || len(again.(map[string]any)) != 0 {
+		t.Fatalf("not idempotent: %v %v", again, err)
+	}
+}
+
+func TestModelCatalogClearsUndeclaredClientCapabilities(t *testing.T) {
+	for _, declaration := range []json.RawMessage{nil, json.RawMessage(`null`), json.RawMessage(`[]`)} {
+		root, models := decodedCatalog(t, catalogFixture(DefaultUpstreamModel, DefaultModelID))
+		if declaration != nil {
+			models[0]["experimental_supported_tools"] = declaration
+		}
+		models[1]["experimental_supported_tools"] = json.RawMessage(`["clock"]`)
+		models[1]["multi_agent_version"] = json.RawMessage(`"v2"`)
+		models[1]["multi_agent_reasoning_effort"] = json.RawMessage(`"xhigh"`)
+		root["models"] = jsonBytes(models)
+		result, err := NewService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, updated := decodedCatalog(t, result.(map[string]any)["Body"].([]byte))
+		if string(updated[1]["experimental_supported_tools"]) != "[]" {
+			t.Fatal("retained undeclared experimental tools")
+		}
+		for _, field := range []string{"multi_agent_version", "multi_agent_reasoning_effort"} {
+			if _, exists := updated[1][field]; exists {
+				t.Fatalf("retained undeclared capability: %s", field)
+			}
+		}
+	}
+}
+
+func TestModelCatalogRejectsInvalidExperimentalToolMetadata(t *testing.T) {
+	for _, raw := range []json.RawMessage{json.RawMessage(`"clock"`), json.RawMessage(`[true]`), json.RawMessage(`{"private-value":1}`)} {
+		root, models := decodedCatalog(t, catalogFixture(DefaultUpstreamModel, DefaultModelID))
+		models[0]["experimental_supported_tools"] = raw
+		root["models"] = jsonBytes(models)
+		result, err := NewService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
+		apiError, ok := err.(*APIError)
+		if result != nil || !ok || apiError.Status != 502 || apiError.Kind != "model_metadata_missing" {
+			t.Fatalf("invalid capability metadata was accepted: %v", err)
+		}
+		if strings.Contains(err.Error(), "private-value") {
+			t.Fatal("error leaked metadata values")
 		}
 	}
 }
