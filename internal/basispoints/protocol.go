@@ -412,9 +412,32 @@ func translateInputItems(rawInput any, allowed map[string]toolSpec) []any {
 		if itemType == "item_reference" || itemType == "additional_tools" {
 			continue
 		}
+		// 服务端原生工具条目不属于本通道契约，原样转发会让整个请求体被拒。
+		if serverNativeItemTypes[itemType] {
+			continue
+		}
 		result = append(result, item)
 	}
 	return result
+}
+
+// 上游 Basis Points 通道不接受服务端原生工具条目；把它们原样转发会让整个请求体被拒(422)。
+// 这里只丢弃这一类明确不属于本通道契约的条目，不动消息、图片、密文推理或未知的未来条目。
+var serverNativeItemTypes = map[string]bool{
+	"web_search_call":         true,
+	"web_search_call_output":  true,
+	"file_search_call":        true,
+	"file_search_call_output": true,
+	"local_shell_call":        true,
+	"local_shell_call_output": true,
+	"computer_call":           true,
+	"computer_call_output":    true,
+	"image_generation_call":   true,
+	"code_interpreter_call":   true,
+	"mcp_call":                true,
+	"mcp_list_tools":          true,
+	"mcp_approval_request":    true,
+	"mcp_approval_response":   true,
 }
 
 func itemText(value any) string {
@@ -712,6 +735,155 @@ func parseRelayObject(value any) (map[string]any, string) {
 	return object, ""
 }
 
+// 中转载荷只做保守修复：去掉 Markdown 围栏、解一层重复编码、转义字符串内裸控制字符、删除尾随逗号。
+// 修复不改变任何已能解析的载荷，也不猜测缺失的引号或结构。
+func parseRelayPayload(value any) (map[string]any, string) {
+	object, reason := parseRelayObject(value)
+	if reason == "" {
+		return object, ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return nil, reason
+	}
+	for _, candidate := range relayRepairCandidates(text) {
+		if repaired, repairedReason := parseRelayObject(candidate); repairedReason == "" {
+			return repaired, ""
+		}
+	}
+	return nil, reason
+}
+
+func relayRepairCandidates(text string) []string {
+	candidates := make([]string, 0, 4)
+	seen := map[string]bool{text: true}
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[candidate] {
+			return
+		}
+		seen[candidate] = true
+		candidates = append(candidates, candidate)
+	}
+	current := stripMarkdownFence(text)
+	add(current)
+	for i := 0; i < 2; i++ {
+		unwrapped, ok := unwrapEncodedJSONString(current)
+		if !ok {
+			break
+		}
+		current = unwrapped
+		add(current)
+	}
+	escaped := escapeRawControlCharacters(current)
+	add(escaped)
+	add(dropTrailingCommas(escaped))
+	return candidates
+}
+
+func stripMarkdownFence(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "```") {
+		return trimmed
+	}
+	trimmed = strings.TrimPrefix(trimmed, "```")
+	if index := strings.IndexByte(trimmed, 10); index >= 0 {
+		language := strings.TrimSpace(trimmed[:index])
+		if !strings.ContainsAny(language, "{[\"") {
+			trimmed = trimmed[index+1:]
+		}
+	}
+	if end := strings.LastIndex(trimmed, "```"); end >= 0 {
+		trimmed = trimmed[:end]
+	}
+	return strings.TrimSpace(trimmed)
+}
+
+// 上游偶尔把参数对象再序列化一次；只在整体是合法 JSON 字符串时解开一层。
+func unwrapEncodedJSONString(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "\"") {
+		return "", false
+	}
+	var inner string
+	if err := json.Unmarshal([]byte(trimmed), &inner); err != nil {
+		return "", false
+	}
+	if !strings.HasPrefix(strings.TrimSpace(inner), "{") {
+		return "", false
+	}
+	return inner, true
+}
+
+// 裸换行、制表符等控制字符只在 JSON 字符串内部非法；按字面量重新转义，不丢字节。
+func escapeRawControlCharacters(text string) string {
+	var builder strings.Builder
+	builder.Grow(len(text))
+	inString := false
+	escaped := false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if inString && !escaped && c < 0x20 {
+			switch c {
+			case 10:
+				builder.WriteString("\\n")
+			case 13:
+				builder.WriteString("\\r")
+			case 9:
+				builder.WriteString("\\t")
+			default:
+				builder.WriteString(fmt.Sprintf("\\u%04x", c))
+			}
+			continue
+		}
+		builder.WriteByte(c)
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inString && c == 92 {
+			escaped = true
+			continue
+		}
+		if c == 34 {
+			inString = !inString
+		}
+	}
+	return builder.String()
+}
+
+func dropTrailingCommas(text string) string {
+	var builder strings.Builder
+	builder.Grow(len(text))
+	inString := false
+	escaped := false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if !inString && c == 44 {
+			next := i + 1
+			for next < len(text) && (text[next] == 32 || text[next] == 9 || text[next] == 10 || text[next] == 13) {
+				next++
+			}
+			if next < len(text) && (text[next] == 125 || text[next] == 93) {
+				continue
+			}
+		}
+		builder.WriteByte(c)
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inString && c == 92 {
+			escaped = true
+			continue
+		}
+		if c == 34 {
+			inString = !inString
+		}
+	}
+	return builder.String()
+}
+
 func relayError(reason string) error {
 	// CPA v7.3.17 的 JSON ABI 没有 request-scoped 标志；422 不会冷却凭据。
 	return fail(422, "invalid_tool_call", "Basis Points returned an invalid client tool relay: "+reason)
@@ -721,7 +893,7 @@ func transportEnvelope(native map[string]any) (map[string]any, error) {
 	if stringValue(native["type"]) != "function_call" || !isTransportName(stringValue(native["name"])) {
 		return nil, relayError("outer_not_transport")
 	}
-	arguments, reason := parseRelayObject(native["arguments"])
+	arguments, reason := parseRelayPayload(native["arguments"])
 	if reason != "" {
 		return nil, relayError("outer_arguments " + reason)
 	}
@@ -831,6 +1003,13 @@ func schemaMatches(value any, schema map[string]any) bool {
 }
 
 func extractNativeClientToolCall(native map[string]any, specs map[string]toolSpec) (map[string]any, error) {
+	return extractNativeClientToolCallIn(native, specs, specs)
+}
+
+// callable 是本回合 tool_choice 允许的子集，declared 是完整目录。
+// 区分两者后，被 tool_choice 过滤掉的工具不再误报为"不在目录中"，诊断可被模型纠正。
+func extractNativeClientToolCallIn(native map[string]any, callable, declared map[string]toolSpec) (map[string]any, error) {
+	specs := callable
 	inner, err := transportEnvelope(native)
 	if err != nil {
 		return nil, err
@@ -838,6 +1017,9 @@ func extractNativeClientToolCall(native map[string]any, specs map[string]toolSpe
 	name, _ := inner["tool"].(string)
 	spec, exists := specs[name]
 	if !exists {
+		if _, declaredOnly := declared[name]; declaredOnly {
+			return nil, relayError("tool_not_allowed_by_tool_choice")
+		}
 		return nil, relayError("tool_not_in_catalog")
 	}
 	callID := stringValue(native["call_id"])
@@ -860,7 +1042,7 @@ func extractNativeClientToolCall(native map[string]any, specs map[string]toolSpe
 		result["type"] = "custom_tool_call"
 		result["input"] = inner["args"]
 	} else {
-		parsed, reason := parseRelayObject(inner["args"])
+		parsed, reason := parseRelayPayload(inner["args"])
 		if reason != "" {
 			return nil, relayError("code " + reason)
 		}
@@ -895,7 +1077,7 @@ func transformResponseBody(body []byte, source map[string]any) ([]byte, map[stri
 			replaced = append(replaced, value)
 			continue
 		}
-		call, err := extractNativeClientToolCall(item, specs)
+		call, err := extractNativeClientToolCallIn(item, specs, clientToolSpecs(source))
 		if err != nil {
 			// 不把服务器注入工具或损坏的中转载荷交给客户端执行。
 			return nil, nil, false, err
