@@ -142,7 +142,7 @@ func TestRelayPreservesPreviousNativeHistory(t *testing.T) {
 			}
 			source := namespaceTestSource("custom", "apply_patch", "")
 			result := map[string]any{"type": "custom_tool_call_output", "call_id": t.Name(), "output": "already executed"}
-			replay := translateInputItems([]any{legacy, result}, clientToolSpecs(source))
+			replay := translateInputItems([]any{legacy, result})
 			if len(replay) != 2 || !reflect.DeepEqual(replay[0], legacy) {
 				t.Fatal("old native history rewritten")
 			}
