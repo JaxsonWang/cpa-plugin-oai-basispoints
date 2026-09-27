@@ -1,5 +1,11 @@
 # 更新日志
 
+## 未发布 — 2026-09-27（UTC+8）
+
+- 新增可选 `http_only_auth_ids`，按 CPA 提供的完整 AuthID 精确匹配，仅让指定凭据在 Basis Points 插件中使用 HTTP/SSE，跳过 WS 握手。不使用会话 ID、显示名或 account_id 匹配，也不自动切换账号。
+- CPA 凭据 `websockets` 仍是 WS 硬门槛；新配置不能将关闭的凭据强制开启 WS，不改写源 OAuth 文件，不改变原生 Codex 的凭据开关。空列表保持原行为，移除 ID 后恢复原有 `auto` 策略。
+- 保持原有握手回退、鉴权/限流报错、已提交请求不重放和配置持久化优先级。新增管理字段、配置隔离及并发回归，配置方法见 `docs/configuration/http-only-auth.md`。
+
 ## v0.1.20 — 2026-09-27（UTC+8，未发布）
 
 - 上游 WS 新增凭据硬门槛：只有 `upstream_transport: auto` 且当前 CPA 凭据的 `websockets` 明确开启时才握手；关闭、缺失或无效值直接走原 HTTP/SSE，不先探测 WS。

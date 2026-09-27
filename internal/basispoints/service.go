@@ -233,6 +233,7 @@ func (s *Service) status() map[string]any {
 		"models":                       cfg.Models,
 		"model_mappings":               cfg.ModelMappings,
 		"upstream_transport":           cfg.UpstreamTransport,
+		"http_only_auth_ids":           cfg.HTTPOnlyAuthIDs,
 		"ws_handshake_timeout_seconds": cfg.WSHandshakeTimeoutSeconds,
 		"stopped":                      stopped,
 		"reasoning_efforts":            []string{"low", "medium", "high", "xhigh", "ultra"},
@@ -250,6 +251,7 @@ func registration(cfg Config) map[string]any {
 			"Description":      "CPA Responses adapter for bps.openai.com with safe client-tool relay",
 			"ConfigFields": []map[string]any{
 				{"Name": "upstream_transport", "Type": "string", "Description": "auto：仅凭据 websockets 已开启时优先 WS，握手失败可回退 HTTP/SSE；http：仅使用 HTTP/SSE。"},
+				{"Name": "http_only_auth_ids", "Type": "array", "Description": "仅本插件强制使用 HTTP/SSE 的 CPA AuthID 列表；精确匹配虚拟认证 ID，不是会话 ID。空列表不额外限制，不改变原生 Codex 的 WS 开关。"},
 				{"Name": "ws_handshake_timeout_seconds", "Type": "integer", "Description": "WS 单次握手上限，默认 5 秒；每轮生成只尝试一次。"},
 				{"Name": "responses_url", "Type": "string", "Description": "Basis Points Responses endpoint."},
 				{"Name": "upstream_model", "Type": "string", "Description": "未单独配置 model_mappings 的别名使用的上游模型。"},
