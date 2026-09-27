@@ -10,7 +10,7 @@ import (
 
 func TestUploadedImageCompletesStreamThroughHostJSON(t *testing.T) {
 	dataURL, _ := testImageDataURL(t)
-	service := NewService()
+	service := newHTTPTestService()
 	uploads, upstreamCloses := 0, 0
 	var emitted []byte
 	var closeError string

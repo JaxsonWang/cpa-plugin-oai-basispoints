@@ -148,7 +148,7 @@ func TestExecutorMessageTextReplay(t *testing.T) {
 				var upstream strings.Builder
 				writeSSE(&upstream, "response.output_text.delta", map[string]any{"type": "response.output_text.delta", "item_id": "msg_text", "output_index": 0, "content_index": 0, "delta": "pong"})
 				writeSSE(&upstream, "response.completed", map[string]any{"type": "response.completed", "response": response})
-				svc := NewService()
+				svc := newHTTPTestService()
 				closed := make(chan map[string]any, 1)
 				var chunks [][]byte
 				svc.SetHost(func(method string, payload any, out any) error {

@@ -2,6 +2,7 @@ package basispoints
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -9,20 +10,62 @@ import (
 
 // 异步读取在 RPC 返回后仍属于插件；停用时先取消上游，再等待工作协程退出。
 type runningStream struct {
-	service  *Service
-	mu       sync.Mutex
-	upstream string
-	canceled bool
+	service       *Service
+	mu            sync.Mutex
+	close         func()
+	ctx           context.Context
+	cancel        context.CancelFunc
+	stopCloseHook func() bool
+	closeHookDone chan struct{}
+	canceled      bool
 }
 
 func (r *runningStream) closeUpstream() {
 	r.mu.Lock()
-	id := r.upstream
-	r.upstream = ""
+	close := r.close
+	r.close = nil
 	r.mu.Unlock()
-	if id != "" {
-		_ = r.service.call("host.http.stream_close", map[string]any{"stream_id": id}, nil)
+	if close != nil {
+		close()
 	}
+}
+
+func (r *runningStream) setClose(close func()) {
+	r.mu.Lock()
+	if r.ctx.Err() != nil {
+		r.mu.Unlock()
+		close()
+		return
+	}
+	r.close = close
+	r.mu.Unlock()
+}
+
+func (r *runningStream) finish() {
+	if !r.stopCloseHook() {
+		<-r.closeHookDone
+	}
+	r.cancel()
+	r.closeUpstream()
+	r.service.mu.Lock()
+	delete(r.service.streams, r)
+	r.service.mu.Unlock()
+	r.service.streamWG.Done()
+}
+
+func (r *runningStream) contextError() error {
+	if r.stopped() {
+		return fail(503, "plugin_stopped", "plugin stopped while processing upstream response")
+	}
+	// 一次分类使用同一个状态快照，避免截止时间夹在两次读取之间而误报取消。
+	contextErr := r.ctx.Err()
+	if errors.Is(contextErr, context.DeadlineExceeded) {
+		return timeoutError(r.service.config())
+	}
+	if contextErr != nil {
+		return fail(499, "client_disconnected", "request canceled while processing upstream response")
+	}
+	return nil
 }
 
 func (r *runningStream) stopped() bool {
@@ -38,11 +81,17 @@ func (s *Service) stopStreams() {
 	for r := range s.streams {
 		active = append(active, r)
 	}
+	scopes := s.requests
+	s.requests = nil
 	s.mu.Unlock()
+	for _, scope := range scopes {
+		scope.cancel()
+	}
 	for _, r := range active {
 		r.mu.Lock()
 		r.canceled = true
 		r.mu.Unlock()
+		r.cancel()
 		r.closeUpstream()
 	}
 	s.streamWG.Wait()
@@ -52,29 +101,16 @@ func (s *Service) executeStream(request ExecutorRequest, body map[string]any, c 
 	if request.StreamID == "" {
 		return nil, fail(500, "stream_id_missing", "executor.execute_stream requires stream_id")
 	}
-	s.mu.Lock()
-	if s.stopped {
-		s.mu.Unlock()
-		return nil, fail(503, "plugin_stopped", "oai-basispoints is shut down")
+	run, err := s.startRun(request)
+	if err != nil {
+		return nil, err
 	}
-	run := &runningStream{service: s}
-	if s.streams == nil {
-		s.streams = make(map[*runningStream]struct{})
-	}
-	s.streams[run] = struct{}{}
-	s.streamWG.Add(1)
-	s.mu.Unlock()
 	ready := make(chan error, 1)
 	delivery := newStreamDelivery(request.Format, func() { ready <- nil }, func(frame []byte) error {
 		return s.call("host.stream.emit", map[string]any{"stream_id": request.StreamID, "payload": frame}, nil)
 	})
 	go func() {
-		defer func() {
-			s.mu.Lock()
-			delete(s.streams, run)
-			s.mu.Unlock()
-			s.streamWG.Done()
-		}()
+		defer run.finish()
 		response, err := s.readStreamingResponse(request, body, c, run, delivery)
 		if err == nil {
 			err = delivery.finish(response)
@@ -128,16 +164,20 @@ func (s *Service) readStreamingResponse(request ExecutorRequest, body map[string
 }
 
 func (s *Service) readStreamAttempt(request ExecutorRequest, body map[string]any, c credential, run *runningStream, delivery *streamDelivery) (map[string]any, error) {
-	if run.stopped() {
-		return nil, fail(503, "plugin_stopped", "plugin stopped while streaming")
+	if err := run.contextError(); err != nil {
+		return nil, err
+	}
+	if response, selected, err := s.tryWebSocket(request, body, c, run, delivery); selected || err != nil {
+		return response, err
+	}
+	if err := run.contextError(); err != nil {
+		return nil, err
 	}
 	upstream, err := s.upstreamStream(request, body, c)
 	if err != nil {
 		return nil, err
 	}
-	run.mu.Lock()
-	run.upstream = upstream.StreamID
-	run.mu.Unlock()
+	run.setClose(func() { _ = s.call("host.http.stream_close", map[string]any{"stream_id": upstream.StreamID}, nil) })
 	defer run.closeUpstream()
 	cfg := s.config()
 	deadline := time.Now().Add(time.Duration(cfg.TimeoutSeconds) * time.Second)
@@ -147,8 +187,8 @@ func (s *Service) readStreamAttempt(request ExecutorRequest, body map[string]any
 	var detected bool
 	consume := func(event, data string) error { return delivery.consume(event, data) }
 	for {
-		if run.stopped() {
-			return nil, fail(503, "plugin_stopped", "plugin stopped while streaming")
+		if err := run.contextError(); err != nil {
+			return nil, err
 		}
 		if time.Now().After(deadline) {
 			return nil, timeoutError(cfg)
@@ -157,8 +197,8 @@ func (s *Service) readStreamAttempt(request ExecutorRequest, body map[string]any
 		if err := s.call("host.http.stream_read", map[string]any{"stream_id": upstream.StreamID}, &chunk); err != nil {
 			return nil, fail(502, "upstream_transport", "Basis Points stream read failed: "+safeError(err))
 		}
-		if run.stopped() {
-			return nil, fail(503, "plugin_stopped", "plugin stopped while streaming")
+		if err := run.contextError(); err != nil {
+			return nil, err
 		}
 		if time.Now().After(deadline) {
 			return nil, timeoutError(cfg)

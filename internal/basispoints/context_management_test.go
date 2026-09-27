@@ -24,7 +24,7 @@ func TestContextManagementWireEncoding(t *testing.T) {
 		for _, stream := range []bool{false, true} {
 			for _, original := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/stream=%t/original=%t", tc.name, stream, original), func(t *testing.T) {
-					service := NewService()
+					service := newHTTPTestService()
 					calls := 0
 					service.SetHost(func(method string, payload any, out any) error {
 						calls++

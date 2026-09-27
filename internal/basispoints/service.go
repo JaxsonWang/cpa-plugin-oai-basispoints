@@ -19,6 +19,7 @@ type Service struct {
 	stopped     bool
 	streams     map[*runningStream]struct{}
 	streamWG    sync.WaitGroup
+	requests    map[string]*requestScope
 }
 
 func NewService() *Service {
@@ -99,6 +100,12 @@ func (s *Service) Handle(method string, raw json.RawMessage) (any, error) {
 		return map[string]any{"identifier": Provider}, nil
 	case "auth.parse":
 		return authParse(raw)
+	case "request.intercept_before":
+		return map[string]any{}, nil
+	case "request.intercept_after":
+		return s.interceptUpstreamRequest(raw)
+	case "request.complete":
+		return s.completeUpstreamRequest(raw)
 	case "auth.login.start":
 		return nil, fail(400, "login_unavailable", "Import an existing CPA codex OAuth credential; interactive login is not used")
 	case "auth.login.poll":
@@ -155,22 +162,38 @@ func (s *Service) execute(raw json.RawMessage, stream bool) (any, error) {
 
 // 在交付任何客户端数据前完成全量校验，畸形调用只允许重生成一次。
 func (s *Service) executeResponse(request ExecutorRequest, body map[string]any, credential credential) ([]byte, map[string]any, http.Header, error) {
+	run, err := s.startRun(request)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer run.finish()
 	source, err := executorSource(request)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		upstream, openErr := s.upstreamRequest(request, body, credential, false)
-		if openErr != nil {
-			return nil, nil, nil, openErr
+		response, selected, wsErr := s.tryWebSocket(request, body, credential, run, nil)
+		if wsErr != nil {
+			return nil, nil, nil, wsErr
 		}
-		headers, raw := upstream.Headers, upstream.Body
-		if len(raw) > s.config().MaxResponseBytes {
-			return nil, nil, nil, fail(502, "upstream_response_too_large", "Basis Points response exceeds configured limit")
-		}
-		response, parseErr := parseResponse(raw, headers)
-		if parseErr != nil {
-			return nil, nil, nil, parseErr
+		var headers http.Header
+		if !selected {
+			if err := run.contextError(); err != nil {
+				return nil, nil, nil, err
+			}
+			upstream, openErr := s.upstreamRequest(request, body, credential, false)
+			if openErr != nil {
+				return nil, nil, nil, openErr
+			}
+			headers = upstream.Headers
+			if len(upstream.Body) > s.config().MaxResponseBytes {
+				return nil, nil, nil, fail(502, "upstream_response_too_large", "Basis Points response exceeds configured limit")
+			}
+			var parseErr error
+			response, parseErr = parseResponse(upstream.Body, headers)
+			if parseErr != nil {
+				return nil, nil, nil, parseErr
+			}
 		}
 		payload, transformed, _, transformErr := transformResponseBody(jsonBytes(response), source)
 		if transformErr == nil {
@@ -203,14 +226,16 @@ func (s *Service) status() map[string]any {
 	stopped := s.stopped
 	s.mu.RUnlock()
 	return map[string]any{
-		"provider":          Provider,
-		"version":           Version,
-		"responses_url":     cfg.ResponsesURL,
-		"upstream_model":    cfg.UpstreamModel,
-		"models":            cfg.Models,
-		"model_mappings":    cfg.ModelMappings,
-		"stopped":           stopped,
-		"reasoning_efforts": []string{"low", "medium", "high", "xhigh", "ultra"},
+		"provider":                     Provider,
+		"version":                      Version,
+		"responses_url":                cfg.ResponsesURL,
+		"upstream_model":               cfg.UpstreamModel,
+		"models":                       cfg.Models,
+		"model_mappings":               cfg.ModelMappings,
+		"upstream_transport":           cfg.UpstreamTransport,
+		"ws_handshake_timeout_seconds": cfg.WSHandshakeTimeoutSeconds,
+		"stopped":                      stopped,
+		"reasoning_efforts":            []string{"low", "medium", "high", "xhigh", "ultra"},
 	}
 }
 
@@ -224,6 +249,8 @@ func registration(cfg Config) map[string]any {
 			"GitHubRepository": "https://github.com/JaxsonWang/cpa-plugin-oai-basispoints",
 			"Description":      "CPA Responses adapter for bps.openai.com with safe client-tool relay",
 			"ConfigFields": []map[string]any{
+				{"Name": "upstream_transport", "Type": "string", "Description": "auto：仅凭据 websockets 已开启时优先 WS，握手失败可回退 HTTP/SSE；http：仅使用 HTTP/SSE。"},
+				{"Name": "ws_handshake_timeout_seconds", "Type": "integer", "Description": "WS 单次握手上限，默认 5 秒；每轮生成只尝试一次。"},
 				{"Name": "responses_url", "Type": "string", "Description": "Basis Points Responses endpoint."},
 				{"Name": "upstream_model", "Type": "string", "Description": "未单独配置 model_mappings 的别名使用的上游模型。"},
 				{"Name": "models", "Type": "array", "Description": "启用的客户端模型别名列表，数量不限。"},
@@ -235,14 +262,16 @@ func registration(cfg Config) map[string]any {
 			},
 		},
 		"capabilities": map[string]any{
-			"auth_provider":           true,
-			"model_provider":          true,
-			"executor":                true,
-			"executor_model_scope":    "both",
-			"executor_input_formats":  []string{"openai-response", "codex"},
-			"executor_output_formats": []string{"openai-response", "codex"},
-			"response_interceptor":    true,
-			"management_api":          false,
+			"auth_provider":            true,
+			"model_provider":           true,
+			"executor":                 true,
+			"executor_model_scope":     "both",
+			"executor_input_formats":   []string{"openai-response", "codex"},
+			"executor_output_formats":  []string{"openai-response", "codex"},
+			"response_interceptor":     true,
+			"request_interceptor":      true,
+			"request_lifecycle_plugin": true,
+			"management_api":           false,
 		},
 		"config": cfg,
 	}

@@ -77,7 +77,7 @@ func TestRelayRegenerationHTTP(t *testing.T) {
 					}
 				}))
 				defer server.Close()
-				svc := NewService()
+				svc := newHTTPTestService()
 				svc.cfg.ResponsesURL = server.URL
 				var upstream []byte
 				var emitted []byte

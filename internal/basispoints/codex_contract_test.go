@@ -19,7 +19,7 @@ func translatedCodexRequest(stream bool) ExecutorRequest {
 
 func TestTranslatedCodexInputUsesHostPayload(t *testing.T) {
 	req := translatedCodexRequest(false)
-	body, _, err := NewService().prepareRequest(req)
+	body, _, err := newHTTPTestService().prepareRequest(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestTranslatedCodexInputUsesHostPayload(t *testing.T) {
 		t.Fatalf("wrong protocol source: %s", text)
 	}
 	req.Payload = nil
-	if _, _, err := NewService().prepareRequest(req); err == nil {
+	if _, _, err := newHTTPTestService().prepareRequest(req); err == nil {
 		t.Fatal("missing translated payload was silently replaced by raw Claude input")
 	}
 }
@@ -38,7 +38,7 @@ func TestCodexHostOutputContract(t *testing.T) {
 		for _, status := range []string{"completed", "incomplete"} {
 			for _, tool := range []bool{false, true} {
 				t.Run(fmt.Sprintf("stream=%t/status=%s/tool=%t", stream, status, tool), func(t *testing.T) {
-					svc := NewService()
+					svc := newHTTPTestService()
 					req := translatedCodexRequest(stream)
 					output := messageItem("assistant", "TRANSLATED_OK")
 					if tool {
@@ -140,10 +140,25 @@ func TestCodexCapabilitiesAndTokenCountBoundary(t *testing.T) {
 			t.Fatalf("%s = %v", key, formats)
 		}
 	}
-	if capabilities["request_interceptor"] == true {
-		t.Fatal("obsolete Claude rejection hook is still registered")
+	if capabilities["request_interceptor"] != true || capabilities["request_lifecycle_plugin"] != true {
+		t.Fatal("WS request cancellation hooks are missing")
 	}
-	svc := NewService()
+	// 新 hook 仅关联取消；不能恢复旧版本拒绝 Claude 的行为。
+	lifecycle := NewService()
+	for _, format := range []string{"claude", "codex", "openai-response"} {
+		for _, method := range []string{"request.intercept_before", "request.intercept_after"} {
+			value, err := lifecycle.Handle(method, jsonBytes(map[string]any{"RequestID": format, "RequestedModel": DefaultModelID, "SourceFormat": format}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := value.(map[string]any)
+			if result["Terminate"] == true || result["StatusCode"] != nil || result["Body"] != nil {
+				t.Fatalf("lifecycle hook rejected or changed %s: %v", format, result)
+			}
+		}
+		_, _ = lifecycle.Handle("request.complete", jsonBytes(map[string]any{"RequestID": format}))
+	}
+	svc := newHTTPTestService()
 	for _, format := range []string{"openai-response", "codex"} {
 		_, err := svc.Handle("executor.count_tokens", jsonBytes(ExecutorRequest{Format: format}))
 		api, ok := err.(*APIError)

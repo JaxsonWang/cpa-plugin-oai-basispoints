@@ -215,7 +215,7 @@ func TestAuthParseExpandsCodexFileIntoNativeAndBasisPointsAuths(t *testing.T) {
 }
 
 func TestServiceUsesCodexAuthParserAndBasisPointsExecutorIdentifiers(t *testing.T) {
-	service := NewService()
+	service := newHTTPTestService()
 	authIdentifier, err := service.Handle("auth.identifier", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +248,7 @@ func TestExecuteBuildsAuthenticatedBasisPointsBody(t *testing.T) {
 	}
 	rawRequest := jsonBytes(requestBody)
 	storage := jsonBytes(map[string]any{"type": "codex", "access_token": token, "account_id": "wrong-file-id"})
-	service := NewService()
+	service := newHTTPTestService()
 	var seenHeaders map[string][]string
 	var seenBody map[string]any
 	service.SetHost(func(method string, payload any, out any) error {

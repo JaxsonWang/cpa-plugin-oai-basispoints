@@ -47,3 +47,23 @@
 候选 macOS 动态库 SHA-256：`a29fd9a3b4edbfc3ebcd1dab9109e7c76632a78cf5ce5fe3654e030d18202367`。这是本地验测包，不是发布资产。
 
 原始日志保存在独立工作区的 `build/pr13-validation/`：`before-repair.jsonl`、`tests.jsonl`、`original-review.jsonl`、`checks.json`、`shuffle.log`、`host/host-integration-results.json`。GitHub CI 状态以最终 PR head 的实际检查结果为准。
+
+## 合入 WS 主分支后的整体验测
+
+同日用户要求将 #13 与已完成的 WS 开发合并并更新 SO。在独立工作区合入主分支 `5844695dcdbbe312301cda13bf2bea409415d9fe`；保留其凭据级 WS 门槛、代理继承、单次握手回退与已提交请求不重放规则。
+
+首次完整回归 627 项通过，但随机顺序复测暴露 WS 生成超时偶发返回 499 的竞态。根因是 `runningStream.contextError` 两次读取 `ctx.Err()`：第一次仍为 nil、第二次变为 `DeadlineExceeded` 时，进入了客户端取消分支。新增受控状态转换回归先失败，再改为基于单个状态快照分类；不新增重试或回退，也不放宽错误断言。
+
+| 最终合并候选检查 | 结果 |
+| --- | --- |
+| 完整 `go test -race -count=1 -json ./...` | 628 项测试/子测试通过，零失败 |
+| 原失败随机种子、相关用例五轮 | 通过 |
+| WS 生成超时与新竞态回归二十轮 | 通过 |
+| vet、build、模块一致性、gofmt、actionlint | 通过 |
+| 原版 CPA WS 回归 | 107 项通过；97 次握手经过认证 CONNECT 代理、HTTP 回退 POST 为零 |
+| 原版 CPA 强制 HTTP 回归 | 96 项通过 |
+| 凭据开关门禁 | missing/false/true 三个独立实例，流式/非流式共 6 项通过；源凭据不修改 |
+| 原生 Codex 补丁 | 实际文件增删改、fileChange 与差异事件、工具结果往返通过 |
+| 原生客户端能力 | 时钟、休眠、异步答案返回上下文通过 |
+
+上述宿主检查均使用此次最终源码重新构建的 macOS 动态库和本地合成推理上游，不复用旧版本二进制的通过结果。所有记录及首次失败日志保存于独立工作区 `build/pr13-ws-integration/`。Linux SO 和实际部署另按最终构建哈希核验，不能仅因注册版本同为 0.1.20 就声称远端已包含 #13、#14。

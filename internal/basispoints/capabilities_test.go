@@ -71,7 +71,7 @@ func TestPrepareRequestPreservesRemoteImagesAndReasoningEffort(t *testing.T) {
 					if original {
 						request.OriginalRequest = raw
 					}
-					body, _, err := NewService().prepareRequest(request)
+					body, _, err := newHTTPTestService().prepareRequest(request)
 					if err != nil {
 						t.Fatal(err)
 					}

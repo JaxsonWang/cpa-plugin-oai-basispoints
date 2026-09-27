@@ -17,7 +17,7 @@ func TestUnsupportedRequestContracts(t *testing.T) {
 			{name: "fast", field: "service_tier", value: "fast", kind: "unsupported_service_tier"},
 		} {
 			t.Run(tc.name+map[bool]string{false: "/nonstream", true: "/stream"}[stream], func(t *testing.T) {
-				s := NewService()
+				s := newHTTPTestService()
 				calls := 0
 				s.SetHost(func(method string, payload any, out any) error { calls++; return nil })
 				source := map[string]any{"model": DefaultModelID, "input": "Hello", "stream": stream}
@@ -62,7 +62,7 @@ func TestStandardTierAcrossExecutorSources(t *testing.T) {
 					req.OriginalRequest = raw
 					req.Payload = jsonBytes(map[string]any{"model": "ignored"})
 				}
-				body, _, err := NewService().prepareRequest(req)
+				body, _, err := newHTTPTestService().prepareRequest(req)
 				valid := tier == nil || tier == "auto" || tier == "default"
 				if valid {
 					if err != nil {
