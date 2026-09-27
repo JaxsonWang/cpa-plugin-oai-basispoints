@@ -111,7 +111,7 @@ func TestTransportUsesReferencesAndPreservesNativeItem(t *testing.T) {
 			"call_id": "call_native_weather",
 			"output":  "18°C",
 		},
-	}, clientToolSpecs(source))
+	})
 	if !reflect.DeepEqual(items[0], native) {
 		t.Fatalf("replayed native item = %#v, want %#v", items[0], native)
 	}

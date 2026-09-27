@@ -72,7 +72,7 @@ func TestAdditionalToolsCatalogAndHistory(t *testing.T) {
 				}
 				result := map[string]any{"type": outputType, "call_id": historical["call_id"], "output": "PROBE_OK"}
 				history := []any{additionalToolsItem(tools), user, historical, result}
-				replay := translateInputItems(history, specs)
+				replay := translateInputItems(history)
 				if len(replay) != 3 || !reflect.DeepEqual(replay[0], user) {
 					t.Fatalf("history changed: %#v", replay)
 				}

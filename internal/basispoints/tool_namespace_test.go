@@ -33,7 +33,7 @@ func TestNamespacedToolCallPreservesNamespace(t *testing.T) {
 	if _, _, _, err := transformResponseBody(jsonBytes(map[string]any{"output": []any{native}}), source); err != nil {
 		t.Fatal(err)
 	}
-	if replay := translateInputItems([]any{call}, clientToolSpecs(source)); !reflect.DeepEqual(replay[0], native) {
+	if replay := translateInputItems([]any{call}); !reflect.DeepEqual(replay[0], native) {
 		t.Fatalf("cached replay = %#v, want %#v", replay[0], native)
 	}
 }
@@ -94,7 +94,11 @@ func TestClientToolIdentityAndReplay(t *testing.T) {
 				t.Fatalf("transform: changed=%t err=%v", changed, err)
 			}
 			call := objectValue(response["output"].([]any)[0])
-			if call["type"] != itemType || call["name"] != tc.name || stringValue(call["namespace"]) != tc.namespace || call["call_id"] != native["call_id"] || call["id"] != native["id"] {
+			wantID := native["id"]
+			if tc.kind == "custom" {
+				wantID = "ctc_" + t.Name()
+			}
+			if call["type"] != itemType || call["name"] != tc.name || stringValue(call["namespace"]) != tc.namespace || call["call_id"] != native["call_id"] || call["id"] != wantID {
 				t.Fatalf("client identity changed: %#v", call)
 			}
 			if tc.namespace == "" {
@@ -113,6 +117,14 @@ func TestClientToolIdentityAndReplay(t *testing.T) {
 				if _, present := call["arguments"]; present {
 					t.Fatal("custom input was changed into function arguments")
 				}
+				for _, event := range clientStreamEvents(t, syntheticStream(response)) {
+					if item := objectValue(event["item"]); item != nil && item["type"] == "custom_tool_call" && item["id"] != wantID {
+						t.Fatalf("stream item has an invalid custom ID: %#v", event)
+					}
+					if strings.HasPrefix(stringValue(event["type"]), "response.custom_tool_call_input.") && event["item_id"] != wantID {
+						t.Fatalf("stream delta has an invalid custom ID: %#v", event)
+					}
+				}
 			}
 			for _, output := range []any{"", "  text\n", []any{}, []any{map[string]any{"type": "input_image", "image_url": "data:image/png;base64,dGVzdA=="}}} {
 				for _, cached := range []bool{true, false} {
@@ -121,7 +133,7 @@ func TestClientToolIdentityAndReplay(t *testing.T) {
 						historyCall["call_id"] = stringValue(call["call_id"]) + "_cache_miss"
 					}
 					result := map[string]any{"type": outputType, "call_id": historyCall["call_id"], "name": tc.name, "namespace": tc.namespace, "output": output}
-					replay := translateInputItems([]any{historyCall, result}, clientToolSpecs(source))
+					replay := translateInputItems([]any{historyCall, result})
 					if len(replay) != 2 {
 						t.Fatalf("replay length = %d", len(replay))
 					}
@@ -180,7 +192,7 @@ func TestClientToolArgumentsPreserveLargeIntegers(t *testing.T) {
 		t.Fatalf("integer precision lost: %s", call["arguments"])
 	}
 	call["call_id"] = "call_uncached_" + t.Name()
-	replay := translateInputItems([]any{call}, clientToolSpecs(source))
+	replay := translateInputItems([]any{call})
 	if envelope, _ := transportEnvelope(objectValue(replay[0])); envelope["args"] != relayTestPayload(args) {
 		t.Fatalf("replay lost integer precision: %#v", envelope)
 	}

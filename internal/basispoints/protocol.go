@@ -342,7 +342,7 @@ func fallbackTransportCall(item map[string]any) map[string]any {
 	}
 }
 
-func translateInputItems(rawInput any, allowed map[string]toolSpec) []any {
+func translateInputItems(rawInput any) []any {
 	if text, ok := rawInput.(string); ok {
 		return []any{messageItem("user", text)}
 	}
@@ -377,14 +377,11 @@ func translateInputItems(rawInput any, allowed map[string]toolSpec) []any {
 				result = append(result, item)
 				continue
 			}
-			if _, exists := allowed[name]; exists {
-				if callID != "" {
-					origins[callID] = transportName
-				}
-				result = append(result, fallbackTransportCall(item))
-				continue
+			// 压缩请求可能没有工具目录；历史调用自身已包含名称和载荷。
+			if callID != "" {
+				origins[callID] = transportName
 			}
-			result = append(result, item)
+			result = append(result, fallbackTransportCall(item))
 			continue
 		}
 		if itemType == "function_call_output" || itemType == "custom_tool_call_output" {
@@ -552,7 +549,7 @@ func prepareResponsesBody(source map[string]any, cfg Config) (map[string]any, er
 	if clientToolCallRequired(source) && len(callableClientToolSpecs(source)) == 0 {
 		return nil, fail(400, "invalid_tool_choice", "tool_choice does not select any available client tool")
 	}
-	inputItems := translateInputItems(source["input"], clientToolSpecs(source))
+	inputItems := translateInputItems(source["input"])
 	historyRoot := conversationFingerprint(inputItems)
 	prologue := []any{}
 	if instructions := stringValue(source["instructions"]); instructions != "" {
@@ -858,6 +855,7 @@ func extractNativeClientToolCall(native map[string]any, specs map[string]toolSpe
 	}
 	if spec.Type == "custom" {
 		result["type"] = "custom_tool_call"
+		result["id"] = "ctc_" + strings.TrimPrefix(stringValue(result["id"]), "fc_")
 		result["input"] = inner["args"]
 	} else {
 		parsed, reason := parseRelayObject(inner["args"])
