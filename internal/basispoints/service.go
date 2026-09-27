@@ -20,6 +20,9 @@ type Service struct {
 	streams     map[*runningStream]struct{}
 	streamWG    sync.WaitGroup
 	requests    map[string]*requestScope
+	authEditMu  sync.Mutex
+	authDir     string
+	authPage    string
 }
 
 func NewService() *Service {
@@ -99,7 +102,21 @@ func (s *Service) Handle(method string, raw json.RawMessage) (any, error) {
 	case "executor.identifier":
 		return map[string]any{"identifier": Provider}, nil
 	case "auth.parse":
-		return authParse(raw)
+		var request authParseRequest
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return nil, err
+		}
+		result, err := parseAuthRequest(request)
+		if err == nil && request.Host.AuthDir != "" {
+			s.mu.Lock()
+			s.authDir = filepath.Clean(request.Host.AuthDir)
+			s.mu.Unlock()
+		}
+		return result, err
+	case "management.register":
+		return s.registerSourceAuthManagement(raw)
+	case "management.handle":
+		return s.handleSourceAuthManagement(raw)
 	case "request.intercept_before":
 		return map[string]any{}, nil
 	case "request.intercept_after":
@@ -271,7 +288,7 @@ func registration(cfg Config) map[string]any {
 			"response_interceptor":     true,
 			"request_interceptor":      true,
 			"request_lifecycle_plugin": true,
-			"management_api":           false,
+			"management_api":           true,
 		},
 		"config": cfg,
 	}

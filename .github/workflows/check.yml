@@ -74,5 +74,13 @@ jobs:
       - name: Run tests
         run: go test -race ./...
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Run source-auth page tests
+        run: node --test internal/basispoints/source_auth_page.test.mjs
+
       - name: Run vet
         run: go vet ./...

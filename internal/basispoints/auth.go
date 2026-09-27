@@ -16,6 +16,7 @@ type authParseRequest struct {
 	FileName string `json:"FileName"`
 	RawJSON  []byte `json:"RawJSON"`
 	Host     struct {
+		AuthDir  string `json:"AuthDir"`
 		ProxyURL string `json:"ProxyURL"`
 	} `json:"Host"`
 }
@@ -305,6 +306,10 @@ func authParse(raw []byte) (map[string]any, error) {
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return nil, err
 	}
+	return parseAuthRequest(request)
+}
+
+func parseAuthRequest(request authParseRequest) (map[string]any, error) {
 	provider := strings.ToLower(strings.TrimSpace(request.Provider))
 	if provider != "" && provider != "codex" && provider != Provider && provider != "openai" {
 		return map[string]any{"Handled": false}, nil
