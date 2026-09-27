@@ -57,10 +57,12 @@ func (r *runningStream) contextError() error {
 	if r.stopped() {
 		return fail(503, "plugin_stopped", "plugin stopped while processing upstream response")
 	}
-	if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
+	// 一次分类使用同一个状态快照，避免截止时间夹在两次读取之间而误报取消。
+	contextErr := r.ctx.Err()
+	if errors.Is(contextErr, context.DeadlineExceeded) {
 		return timeoutError(r.service.config())
 	}
-	if r.ctx.Err() != nil {
+	if contextErr != nil {
 		return fail(499, "client_disconnected", "request canceled while processing upstream response")
 	}
 	return nil

@@ -828,13 +828,21 @@ func schemaMatches(value any, schema map[string]any) bool {
 }
 
 func extractNativeClientToolCall(native map[string]any, specs map[string]toolSpec) (map[string]any, error) {
+	return extractNativeClientToolCallIn(native, specs, specs)
+}
+
+// callable 限制本轮调用权限，declared 只用于区分目录缺失与本轮禁用。
+func extractNativeClientToolCallIn(native map[string]any, callable, declared map[string]toolSpec) (map[string]any, error) {
 	inner, err := transportEnvelope(native)
 	if err != nil {
 		return nil, err
 	}
 	name, _ := inner["tool"].(string)
-	spec, exists := specs[name]
+	spec, exists := callable[name]
 	if !exists {
+		if _, declaredOnly := declared[name]; declaredOnly {
+			return nil, relayError("tool_not_allowed_by_tool_choice")
+		}
 		return nil, relayError("tool_not_in_catalog")
 	}
 	callID := stringValue(native["call_id"])
@@ -884,6 +892,7 @@ func transformResponseBody(body []byte, source map[string]any) ([]byte, map[stri
 	}
 	output, _ := response["output"].([]any)
 	specs := callableClientToolSpecs(source)
+	declared := clientToolSpecs(source)
 	replaced := make([]any, 0, len(output))
 	natives := make([]map[string]any, 0)
 	callIDs := map[string]bool{}
@@ -893,7 +902,7 @@ func transformResponseBody(body []byte, source map[string]any) ([]byte, map[stri
 			replaced = append(replaced, value)
 			continue
 		}
-		call, err := extractNativeClientToolCall(item, specs)
+		call, err := extractNativeClientToolCallIn(item, specs, declared)
 		if err != nil {
 			// 不把服务器注入工具或损坏的中转载荷交给客户端执行。
 			return nil, nil, false, err
