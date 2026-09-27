@@ -6,12 +6,11 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 )
 
 const (
-	Version        = "0.1.20"
+	Version        = "0.2.0"
 	Provider       = "oai-basispoints"
 	AuthProviderID = "codex"
 	PluginID       = Provider
@@ -112,7 +111,6 @@ type streamChunk struct {
 
 type Config struct {
 	UpstreamTransport         string            `yaml:"upstream_transport" json:"upstream_transport"`
-	HTTPOnlyAuthIDs           []string          `yaml:"http_only_auth_ids" json:"http_only_auth_ids"`
 	WSHandshakeTimeoutSeconds int               `yaml:"ws_handshake_timeout_seconds" json:"ws_handshake_timeout_seconds"`
 	DataDir                   string            `yaml:"data_dir" json:"data_dir"`
 	ResponsesURL              string            `yaml:"responses_url" json:"responses_url"`
@@ -128,7 +126,6 @@ type Config struct {
 func defaultConfig() Config {
 	return Config{
 		UpstreamTransport:         "auto",
-		HTTPOnlyAuthIDs:           []string{},
 		WSHandshakeTimeoutSeconds: 5,
 		DataDir:                   "plugins/oai-basispoints-data",
 		ResponsesURL:              DefaultResponsesURL,
@@ -148,19 +145,6 @@ func (c *Config) normalize() error {
 	if c.UpstreamTransport != "auto" && c.UpstreamTransport != "http" {
 		return fail(400, "invalid_config", "upstream_transport must be auto or http")
 	}
-	seenAuthIDs := make(map[string]bool, len(c.HTTPOnlyAuthIDs))
-	authIDs := make([]string, 0, len(c.HTTPOnlyAuthIDs))
-	for _, id := range c.HTTPOnlyAuthIDs {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			return fail(400, "invalid_config", "http_only_auth_ids requires non-empty CPA AuthIDs")
-		}
-		if !seenAuthIDs[id] {
-			seenAuthIDs[id] = true
-			authIDs = append(authIDs, id)
-		}
-	}
-	c.HTTPOnlyAuthIDs = authIDs
 	if c.WSHandshakeTimeoutSeconds < 1 || c.WSHandshakeTimeoutSeconds > 30 {
 		return fail(400, "invalid_config", "ws_handshake_timeout_seconds must be between 1 and 30")
 	}
@@ -223,7 +207,6 @@ func (c *Config) normalize() error {
 
 func (c Config) clone() Config {
 	c.Models = append([]string(nil), c.Models...)
-	c.HTTPOnlyAuthIDs = slices.Clone(c.HTTPOnlyAuthIDs)
 	c.ModelMappings = maps.Clone(c.ModelMappings)
 	return c
 }

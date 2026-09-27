@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +19,7 @@ import (
 // selected 为真表示已选择 WS；之后即使没有收到正文，也不能转 HTTP 重放一次生成。
 func (s *Service) tryWebSocket(request ExecutorRequest, body map[string]any, c credential, run *runningStream, delivery *streamDelivery) (response map[string]any, selected bool, err error) {
 	cfg := s.config()
-	// 只限制本插件的传输，不改 CPA 凭据开关、不按会话 ID 换账号。
-	if cfg.UpstreamTransport == "http" || !credentialWebsocketsEnabled(request) || slices.Contains(cfg.HTTPOnlyAuthIDs, request.AuthID) {
+	if cfg.UpstreamTransport == "http" || !credentialWebsocketsEnabled(request) {
 		return nil, false, nil
 	}
 	if err := run.contextError(); err != nil {

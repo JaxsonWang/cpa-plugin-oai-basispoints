@@ -33,17 +33,12 @@ plugins:
         gpt-5.6-sol-basispoints: gpt-5.6-sol
 
       # auto：仅当前 CPA 凭据的 websockets 开关开启时优先 WS；每轮握手一次。
+      # 多账号分别按各自开关尝试，不限制同时启用的账号数量；能否返回 101 由上游决定。
       # 凭据开关关闭、缺失或无效时直接走 HTTP/SSE，不先握手，也不改写凭据。
       # 开启后的握手失败仍按下方规则回退原 HTTP/SSE。
       # http：主动关闭 WS，仅使用原有 HTTP 通道（流式为 SSE，非流式保持原语义）。
       # 401/403/407/429 不回退；WS 已建立有效连接后，不再换通道重放请求。
       upstream_transport: auto
-
-      # 可选：这些 CPA AuthID 仅在 Basis Points 插件中使用 HTTP/SSE，跳过 WS 握手。
-      # 精确匹配虚拟认证 ID（例如 bp-codex-example），不是会话 ID、account_id 或显示名。
-      # 留空表示不额外限制；不会换账号，也不会修改原生 Codex 的 websockets 开关。
-      # 不在列表中的凭据仍须显式开启 CPA websockets，才允许按 auto 尝试 WS。
-      http_only_auth_ids: []
 
       # 单次 WS 握手上限，单位：秒；范围：1～30，默认 5。
       # 不连续重试握手；下一轮请求重新优先尝试 WS。
