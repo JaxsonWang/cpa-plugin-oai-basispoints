@@ -125,7 +125,7 @@ func TestExecutorNativeToolRoundTrip(t *testing.T) {
 					native := namespaceTestNative(t.Name(), "mcp__node_repl.js", args)
 					upstream := map[string]any{"id": "resp_native_roundtrip", "status": "completed", "output": []any{native}}
 					upstreamSSE := []byte("event: response.completed\ndata: " + string(jsonBytes(map[string]any{"type": "response.completed", "response": upstream})) + "\n\n")
-					service := NewService()
+					service := newHTTPTestService()
 					closed := make(chan map[string]any, 1)
 					var emitted []byte
 					service.SetHost(func(method string, payload any, out any) error {

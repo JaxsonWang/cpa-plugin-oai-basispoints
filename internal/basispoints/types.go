@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	Version        = "0.1.18"
+	Version        = "0.1.20"
 	Provider       = "oai-basispoints"
 	AuthProviderID = "codex"
 	PluginID       = Provider
@@ -110,32 +110,43 @@ type streamChunk struct {
 }
 
 type Config struct {
-	DataDir          string            `yaml:"data_dir" json:"data_dir"`
-	ResponsesURL     string            `yaml:"responses_url" json:"responses_url"`
-	UpstreamModel    string            `yaml:"upstream_model" json:"upstream_model"`
-	Models           []string          `yaml:"models" json:"models"`
-	ModelMappings    map[string]string `yaml:"model_mappings" json:"model_mappings"`
-	TimeoutSeconds   int               `yaml:"timeout_seconds" json:"timeout_seconds"`
-	MaxResponseBytes int               `yaml:"max_response_bytes" json:"max_response_bytes"`
-	AuthMode         string            `yaml:"auth_mode" json:"auth_mode"`
-	ToolsVersionID   string            `yaml:"tools_version_id" json:"tools_version_id"`
+	UpstreamTransport         string            `yaml:"upstream_transport" json:"upstream_transport"`
+	WSHandshakeTimeoutSeconds int               `yaml:"ws_handshake_timeout_seconds" json:"ws_handshake_timeout_seconds"`
+	DataDir                   string            `yaml:"data_dir" json:"data_dir"`
+	ResponsesURL              string            `yaml:"responses_url" json:"responses_url"`
+	UpstreamModel             string            `yaml:"upstream_model" json:"upstream_model"`
+	Models                    []string          `yaml:"models" json:"models"`
+	ModelMappings             map[string]string `yaml:"model_mappings" json:"model_mappings"`
+	TimeoutSeconds            int               `yaml:"timeout_seconds" json:"timeout_seconds"`
+	MaxResponseBytes          int               `yaml:"max_response_bytes" json:"max_response_bytes"`
+	AuthMode                  string            `yaml:"auth_mode" json:"auth_mode"`
+	ToolsVersionID            string            `yaml:"tools_version_id" json:"tools_version_id"`
 }
 
 func defaultConfig() Config {
 	return Config{
-		DataDir:          "plugins/oai-basispoints-data",
-		ResponsesURL:     DefaultResponsesURL,
-		UpstreamModel:    DefaultUpstreamModel,
-		Models:           []string{DefaultModelID},
-		TimeoutSeconds:   300,
-		MaxResponseBytes: 64 << 20,
-		AuthMode:         "chatgpt",
+		UpstreamTransport:         "auto",
+		WSHandshakeTimeoutSeconds: 5,
+		DataDir:                   "plugins/oai-basispoints-data",
+		ResponsesURL:              DefaultResponsesURL,
+		UpstreamModel:             DefaultUpstreamModel,
+		Models:                    []string{DefaultModelID},
+		TimeoutSeconds:            300,
+		MaxResponseBytes:          64 << 20,
+		AuthMode:                  "chatgpt",
 	}
 }
 
 func (c *Config) normalize() error {
 	if c == nil {
 		return fail(400, "invalid_config", "configuration is missing")
+	}
+	c.UpstreamTransport = strings.ToLower(strings.TrimSpace(c.UpstreamTransport))
+	if c.UpstreamTransport != "auto" && c.UpstreamTransport != "http" {
+		return fail(400, "invalid_config", "upstream_transport must be auto or http")
+	}
+	if c.WSHandshakeTimeoutSeconds < 1 || c.WSHandshakeTimeoutSeconds > 30 {
+		return fail(400, "invalid_config", "ws_handshake_timeout_seconds must be between 1 and 30")
 	}
 	c.ResponsesURL = strings.TrimSpace(c.ResponsesURL)
 	if c.ResponsesURL == "" {

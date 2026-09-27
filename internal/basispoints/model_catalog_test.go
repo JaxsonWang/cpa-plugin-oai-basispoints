@@ -36,7 +36,7 @@ func decodedCatalog(t *testing.T, raw []byte) (map[string]json.RawMessage, []map
 }
 
 func TestModelCatalogRepairsLegacyHostResponse(t *testing.T) {
-	svc := NewService()
+	svc := newHTTPTestService()
 	before := catalogFixture(DefaultUpstreamModel, DefaultModelID)
 	result, err := svc.Handle("response.intercept_after", jsonBytes(catalogRequest(before)))
 	if err != nil {
@@ -113,7 +113,7 @@ func TestModelCatalogIgnoresOtherResponses(t *testing.T) {
 			case "unrelated-models":
 				req.Body = catalogFixture(DefaultUpstreamModel, "not-our-alias")
 			}
-			result, err := NewService().Handle("response.intercept_after", jsonBytes(req))
+			result, err := newHTTPTestService().Handle("response.intercept_after", jsonBytes(req))
 			if err != nil || len(result.(map[string]any)) != 0 {
 				t.Fatalf("unrelated response changed: %v %v", result, err)
 			}
@@ -131,7 +131,7 @@ func TestModelCatalogRequiresRealCanonicalMetadata(t *testing.T) {
 				models[0][field] = json.RawMessage(`0`)
 			}
 			root["models"] = jsonBytes(models)
-			result, err := NewService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
+			result, err := newHTTPTestService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
 			if result != nil || err == nil {
 				t.Fatal("missing metadata was silently fabricated")
 			}
@@ -145,7 +145,7 @@ func TestModelCatalogRequiresRealCanonicalMetadata(t *testing.T) {
 
 func TestModelCatalogUsesConfiguredNamesAndPrefixes(t *testing.T) {
 	for _, prefix := range []string{"", "tenant/"} {
-		svc := NewService()
+		svc := newHTTPTestService()
 		svc.cfg.UpstreamModel = "custom-canonical"
 		svc.cfg.Models = []string{"custom-alias"}
 		body := catalogFixture(prefix+svc.cfg.UpstreamModel, prefix+svc.cfg.Models[0])
@@ -168,7 +168,7 @@ func TestModelCatalogDoesNotRetainGenericEffectivePercentage(t *testing.T) {
 	delete(models[0], "effective_context_window_percent")
 	models[1]["effective_context_window_percent"] = json.RawMessage(`80`)
 	root["models"] = jsonBytes(models)
-	result, err := NewService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
+	result, err := newHTTPTestService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestModelCatalogDoesNotRetainGenericEffectivePercentage(t *testing.T) {
 func TestModelCatalogRoutesEachMappedAlias(t *testing.T) {
 	for _, prefix := range []string{"", "tenant/"} {
 		t.Run(prefix, func(t *testing.T) {
-			svc := NewService()
+			svc := newHTTPTestService()
 			svc.cfg = mappedConfig(3)
 			var entries []any
 			for i, alias := range svc.cfg.Models {
@@ -238,7 +238,7 @@ func TestModelCatalogRoutesEachMappedAlias(t *testing.T) {
 
 func TestModelCatalogMappedAliasRequiresOwnCanonical(t *testing.T) {
 	for _, prefix := range []string{"", "tenant/"} {
-		svc := NewService()
+		svc := newHTTPTestService()
 		svc.cfg = mappedConfig(3)
 		alias := svc.cfg.Models[1]
 		entries := []any{
@@ -279,7 +279,7 @@ func TestModelCatalogMatchesCanonicalPatchCapability(t *testing.T) {
 				}
 				models[2]["apply_patch_tool_type"] = json.RawMessage(`"freeform"`)
 				root["models"] = jsonBytes(models)
-				svc := NewService()
+				svc := newHTTPTestService()
 				result, err := svc.Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
 				if err != nil {
 					t.Fatal(err)
@@ -311,7 +311,7 @@ func TestModelCatalogRestoresOnlySupportedClientCapabilities(t *testing.T) {
 	models[1]["node_repl_auto_review_required"] = json.RawMessage(`false`)
 	models[1]["experimental_supported_tools"] = json.RawMessage(`["stale_tool"]`)
 	root["models"] = jsonBytes(models)
-	svc := NewService()
+	svc := newHTTPTestService()
 	result, err := svc.Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
 	if err != nil {
 		t.Fatal(err)
@@ -348,7 +348,7 @@ func TestModelCatalogClearsUndeclaredClientCapabilities(t *testing.T) {
 		models[1]["multi_agent_version"] = json.RawMessage(`"v2"`)
 		models[1]["multi_agent_reasoning_effort"] = json.RawMessage(`"xhigh"`)
 		root["models"] = jsonBytes(models)
-		result, err := NewService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
+		result, err := newHTTPTestService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -369,7 +369,7 @@ func TestModelCatalogRejectsInvalidExperimentalToolMetadata(t *testing.T) {
 		root, models := decodedCatalog(t, catalogFixture(DefaultUpstreamModel, DefaultModelID))
 		models[0]["experimental_supported_tools"] = raw
 		root["models"] = jsonBytes(models)
-		result, err := NewService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
+		result, err := newHTTPTestService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
 		apiError, ok := err.(*APIError)
 		if result != nil || !ok || apiError.Status != 502 || apiError.Kind != "model_metadata_missing" {
 			t.Fatalf("invalid capability metadata was accepted: %v", err)

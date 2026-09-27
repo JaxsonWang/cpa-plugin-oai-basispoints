@@ -32,6 +32,17 @@ plugins:
         gpt-6-astra-basispoints: gpt-6-astra
         gpt-5.6-sol-basispoints: gpt-5.6-sol
 
+      # auto：仅当前 CPA 凭据的 websockets 开关开启时优先 WS；每轮握手一次。
+      # 凭据开关关闭、缺失或无效时直接走 HTTP/SSE，不先握手，也不改写凭据。
+      # 开启后的握手失败仍按下方规则回退原 HTTP/SSE。
+      # http：主动关闭 WS，仅使用原有 HTTP 通道（流式为 SSE，非流式保持原语义）。
+      # 401/403/407/429 不回退；WS 已建立有效连接后，不再换通道重放请求。
+      upstream_transport: auto
+
+      # 单次 WS 握手上限，单位：秒；范围：1～30，默认 5。
+      # 不连续重试握手；下一轮请求重新优先尝试 WS。
+      ws_handshake_timeout_seconds: 5
+
       # 读取上游响应的超时时间，单位：秒；范围：10～1800，默认 300。
       timeout_seconds: 300
 

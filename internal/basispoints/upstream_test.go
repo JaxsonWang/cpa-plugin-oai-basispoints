@@ -20,7 +20,7 @@ func TestRejectedStreamPreservesBodyStatusAndCloses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			service := NewService()
+			service := newHTTPTestService()
 			opens, reads, closes := 0, 0, 0
 			service.SetHost(func(method string, payload any, out any) error {
 				switch method {
@@ -81,7 +81,7 @@ func TestValidationErrorOmitsRejectedInput(t *testing.T) {
 }
 
 func TestSuccessfulStreamIsNotReadOrClosedEarly(t *testing.T) {
-	service := NewService()
+	service := newHTTPTestService()
 	service.SetHost(func(method string, payload any, out any) error {
 		if method != "host.http.do_stream" {
 			t.Fatalf("success stream touched early: %s", method)

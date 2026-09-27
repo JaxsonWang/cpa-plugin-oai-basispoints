@@ -75,7 +75,7 @@ func TestIncrementalDeliveryPreservesByteSplitLifecycle(t *testing.T) {
 func TestStreamingClientDisconnectAndQuiesceCloseUpstream(t *testing.T) {
 	for _, mode := range []string{"disconnect", "quiesce"} {
 		t.Run(mode, func(t *testing.T) {
-			svc := NewService()
+			svc := newHTTPTestService()
 			firstText, upstreamClosed, closed := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			var firstOnce, closeOnce sync.Once
 			reads, closes := 0, 0

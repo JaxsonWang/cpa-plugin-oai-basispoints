@@ -14,6 +14,7 @@ import (
 
 func mappedConfig(count int) Config {
 	cfg := defaultConfig()
+	cfg.UpstreamTransport = "http"
 	cfg.DataDir = ""
 	cfg.Models = nil
 	cfg.ModelMappings = make(map[string]string, count)
@@ -118,7 +119,7 @@ func TestModelMappingsPreserveUnmappedAliases(t *testing.T) {
 }
 
 func TestModelMappingsRequestSelection(t *testing.T) {
-	svc := NewService()
+	svc := newHTTPTestService()
 	cfg := mappedConfig(3)
 	configureForTest(t, svc, cfg)
 	for _, tc := range []struct {
@@ -165,7 +166,7 @@ func TestModelMappingsRequestSelection(t *testing.T) {
 func TestModelMappingsPersistAndClone(t *testing.T) {
 	cfg := mappedConfig(3)
 	cfg.DataDir = t.TempDir()
-	svc := NewService()
+	svc := newHTTPTestService()
 	configureForTest(t, svc, cfg)
 	raw, err := os.ReadFile(filepath.Join(cfg.DataDir, "settings.json"))
 	if err != nil {
@@ -175,7 +176,7 @@ func TestModelMappingsPersistAndClone(t *testing.T) {
 	if err := json.Unmarshal(raw, &saved); err != nil || !reflect.DeepEqual(saved, cfg) {
 		t.Fatalf("mapping persistence differs: %v", err)
 	}
-	restored := NewService()
+	restored := newHTTPTestService()
 	if err := restored.configure(jsonBytes(map[string]any{"config_yaml": []byte("data_dir: " + cfg.DataDir)})); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +192,7 @@ func TestModelMappingsPersistAndClone(t *testing.T) {
 }
 
 func TestModelMappingsReconfigure(t *testing.T) {
-	svc := NewService()
+	svc := newHTTPTestService()
 	configureForTest(t, svc, mappedConfig(3))
 	next := mappedConfig(1)
 	next.ModelMappings[next.Models[0]] = "changed-model"
@@ -222,7 +223,7 @@ func TestModelMappingsExecutorRoutesBothModes(t *testing.T) {
 		for _, alias := range cfg.Models {
 			t.Run(fmt.Sprintf("%s/stream=%t", alias, stream), func(t *testing.T) {
 				want := cfg.ModelMappings[alias]
-				svc := NewService()
+				svc := newHTTPTestService()
 				configureForTest(t, svc, cfg)
 				response := map[string]any{"id": "resp_model_mapping", "model": want, "status": "completed", "output": []any{messageItem("assistant", "ok")}}
 				closed := make(chan map[string]any, 1)
@@ -293,7 +294,7 @@ func TestModelMappingsExecutorRoutesBothModes(t *testing.T) {
 }
 
 func TestModelMappingsParallelRequests(t *testing.T) {
-	svc := NewService()
+	svc := newHTTPTestService()
 	cfg := mappedConfig(25)
 	configureForTest(t, svc, cfg)
 	t.Cleanup(func() {
@@ -345,7 +346,7 @@ func TestModelMappingsExampleConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := NewService()
+	svc := newHTTPTestService()
 	if _, err := svc.Handle("plugin.register", jsonBytes(map[string]any{"config_yaml": configYAML})); err != nil {
 		t.Fatal(err)
 	}

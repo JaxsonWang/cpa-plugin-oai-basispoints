@@ -15,12 +15,19 @@ type authParseRequest struct {
 	Path     string `json:"Path"`
 	FileName string `json:"FileName"`
 	RawJSON  []byte `json:"RawJSON"`
+	Host     struct {
+		ProxyURL string `json:"ProxyURL"`
+	} `json:"Host"`
 }
 
 type authRefreshRequest struct {
-	AuthID      string         `json:"AuthID"`
-	StorageJSON []byte         `json:"StorageJSON"`
-	Metadata    map[string]any `json:"Metadata"`
+	AuthID      string            `json:"AuthID"`
+	StorageJSON []byte            `json:"StorageJSON"`
+	Metadata    map[string]any    `json:"Metadata"`
+	Attributes  map[string]string `json:"Attributes"`
+	Host        *struct {
+		ProxyURL string `json:"ProxyURL"`
+	} `json:"Host"`
 }
 
 type credential struct {
@@ -195,6 +202,7 @@ func credentialID(fileName string) string {
 }
 
 func authData(raw []byte, fileName string, c credential) map[string]any {
+	websockets := credentialWebsocketsEnabled(ExecutorRequest{StorageJSON: raw})
 	id := credentialID(fileName)
 	label := c.Email
 	if label == "" {
@@ -207,12 +215,14 @@ func authData(raw []byte, fileName string, c credential) map[string]any {
 		"Label":       label,
 		"StorageJSON": raw,
 		"Metadata": map[string]any{
+			"websockets": websockets,
 			"type":       Provider,
 			"auth_kind":  "oauth",
 			"account_id": c.AccountID,
 			"auth_mode":  c.AuthMode,
 		},
 		"Attributes": map[string]string{
+			"websockets": strconv.FormatBool(websockets),
 			"auth_kind":  "oauth",
 			"account_id": c.AccountID,
 			"auth_mode":  c.AuthMode,
@@ -311,6 +321,7 @@ func authParse(raw []byte) (map[string]any, error) {
 		return map[string]any{"Handled": false}, nil
 	}
 	virtual := authData(request.RawJSON, fileName, c)
+	setWebSocketProxy(virtual, request.RawJSON, request.Host.ProxyURL)
 	if provider == Provider {
 		return map[string]any{"Handled": true, "Auth": virtual}, nil
 	}
@@ -353,10 +364,32 @@ func authRefresh(raw []byte) (map[string]any, error) {
 			next = time.Now().Add(time.Minute)
 		}
 	}
+	auth := authData(request.StorageJSON, fileName, c)
+	websockets := credentialWebsocketsEnabled(ExecutorRequest{StorageJSON: request.StorageJSON, AuthMetadata: request.Metadata, AuthAttributes: request.Attributes})
+	auth["Metadata"].(map[string]any)["websockets"] = websockets
+	auth["Attributes"].(map[string]string)["websockets"] = strconv.FormatBool(websockets)
+	proxyURL := request.Attributes["basispoints_proxy_url"]
+	if request.Host != nil {
+		proxyURL = request.Host.ProxyURL
+	}
+	setWebSocketProxy(auth, request.StorageJSON, proxyURL)
 	return map[string]any{
-		"Auth":             authData(request.StorageJSON, fileName, c),
+		"Auth":             auth,
 		"NextRefreshAfter": next.UTC(),
 	}, nil
+}
+
+// WS 不经过宿主 HTTP 客户端，解析和刷新都必须继承同一份代理，不能悄悄改为直连。
+func setWebSocketProxy(auth map[string]any, raw []byte, hostProxy string) {
+	var settings map[string]any
+	_ = json.Unmarshal(raw, &settings)
+	proxyURL := strings.TrimSpace(stringValue(settings["proxy_url"]))
+	if proxyURL != "" {
+		auth["ProxyURL"] = proxyURL
+	} else {
+		proxyURL = strings.TrimSpace(hostProxy)
+	}
+	auth["Attributes"].(map[string]string)["basispoints_proxy_url"] = proxyURL
 }
 
 func credentialFromExecutor(request ExecutorRequest) (credential, error) {

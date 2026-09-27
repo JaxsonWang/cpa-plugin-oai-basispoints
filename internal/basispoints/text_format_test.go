@@ -23,7 +23,7 @@ func TestTextFormatRejectsUnsupportedAndInvalidRequestsBeforeHost(t *testing.T) 
 				{"plain_extra", "invalid_text_format", map[string]any{"format": map[string]any{"type": "text", "schema": "private-value"}}},
 			} {
 				t.Run(sourceFormat+"/"+tc.name+map[bool]string{false: "/nonstream", true: "/stream"}[stream], func(t *testing.T) {
-					svc := NewService()
+					svc := newHTTPTestService()
 					calls := 0
 					svc.SetHost(func(string, any, any) error { calls++; return nil })
 					source := map[string]any{"model": DefaultModelID, "input": "hello", "text": tc.text}

@@ -86,7 +86,7 @@ func TestInlineImageUploadWireContract(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		for _, original := range []bool{false, true} {
 			t.Run(fmt.Sprintf("stream=%t/original=%t", stream, original), func(t *testing.T) {
-				service := NewService()
+				service := newHTTPTestService()
 				uploads, responses := 0, 0
 				var received map[string]any
 				service.SetHost(func(method string, payload any, out any) error {
@@ -185,7 +185,7 @@ func TestAttachmentFailureStopsResponseSubmission(t *testing.T) {
 	for _, tc := range cases {
 		for _, method := range []string{"executor.execute", "executor.execute_stream"} {
 			t.Run(tc.name+"/"+method, func(t *testing.T) {
-				service := NewService()
+				service := newHTTPTestService()
 				calls := 0
 				service.SetHost(func(method string, payload any, out any) error {
 					calls++
@@ -210,7 +210,7 @@ func TestAttachmentFailureStopsResponseSubmission(t *testing.T) {
 
 func TestInvalidInlineImagesStopBeforeNetworking(t *testing.T) {
 	for _, dataURL := range []string{"data:image/png;base64", "data:text/plain;base64,dGVzdA==", "data:image/png;base64,%%%", "data:image/png;base64,not-base64", "data:image/png;base64,", "data:,image"} {
-		service := NewService()
+		service := newHTTPTestService()
 		service.SetHost(func(string, any, any) error { t.Error("invalid image reached network"); return nil })
 		request := imageRequest(map[string]any{"type": "input_image", "image_url": dataURL})
 		_, err := service.Handle("executor.execute", jsonBytes(request))
@@ -223,7 +223,7 @@ func TestInvalidInlineImagesStopBeforeNetworking(t *testing.T) {
 
 func TestAttachmentCacheCredentialAndEndpointIsolation(t *testing.T) {
 	dataURL, _ := testImageDataURL(t)
-	service := NewService()
+	service := newHTTPTestService()
 	uploads := 0
 	service.SetHost(func(method string, payload any, out any) error {
 		uploads++
@@ -252,7 +252,7 @@ func TestAttachmentCacheCredentialAndEndpointIsolation(t *testing.T) {
 
 func TestAttachmentCacheCoalescesConcurrentUploads(t *testing.T) {
 	dataURL, _ := testImageDataURL(t)
-	service := NewService()
+	service := newHTTPTestService()
 	var uploads atomic.Int32
 	started, release := make(chan struct{}), make(chan struct{})
 	service.SetHost(func(method string, payload any, out any) error {
@@ -314,7 +314,7 @@ func TestImageUploadPreservesOtherInputKinds(t *testing.T) {
 		map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "input_image", "image_url": dataURL}}},
 	}}
 	before := string(jsonBytes(source))
-	service := NewService()
+	service := newHTTPTestService()
 	service.SetHost(func(string, any, any) error {
 		t.Error("unexpected upload or URL download")
 		return errors.New("unexpected host call")

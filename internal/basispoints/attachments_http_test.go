@@ -59,7 +59,7 @@ func TestExecuteImageThroughLocalHTTP(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	service := NewService()
+	service := newHTTPTestService()
 	service.cfg.ResponsesURL = server.URL + "/api/responses"
 	service.SetHost(func(method string, payload any, out any) error {
 		if method != "host.http.do" {

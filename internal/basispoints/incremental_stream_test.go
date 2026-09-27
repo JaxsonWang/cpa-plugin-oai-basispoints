@@ -91,7 +91,7 @@ func TestIncrementalFailureDoesNotRetryOrDeliverPartialToolBatch(t *testing.T) {
 				case "size_limit":
 					last.Payload = bytes.Repeat([]byte("x"), 4000)
 				}
-				svc := NewService()
+				svc := newHTTPTestService()
 				if mode == "size_limit" {
 					svc.cfg.MaxResponseBytes = 3000
 				}
@@ -208,7 +208,7 @@ func TestExecutorStreamsTextBeforeUpstreamCompletes(t *testing.T) {
 			var mu sync.Mutex
 			var frames [][]byte
 			reads, upstreamCloses := 0, 0
-			svc := NewService()
+			svc := newHTTPTestService()
 			svc.SetHost(func(method string, payload any, out any) error {
 				switch method {
 				case "host.http.do_stream":

@@ -11,7 +11,7 @@ func TestEncryptedAgentMessageRejectedBeforeHost(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		for _, sourceFormat := range []string{"openai-response", "codex"} {
 			t.Run(sourceFormat+map[bool]string{false: "/nonstream", true: "/stream"}[stream], func(t *testing.T) {
-				svc := NewService()
+				svc := newHTTPTestService()
 				calls := 0
 				svc.SetHost(func(string, any, any) error { calls++; return nil })
 				source := map[string]any{
@@ -70,7 +70,7 @@ func TestCatalogDoesNotAdvertiseEncryptedMultiAgentProtocol(t *testing.T) {
 		model["multi_agent_reasoning_effort"] = jsonBytes("xhigh")
 	}
 	root["models"] = jsonBytes(models)
-	result, err := NewService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
+	result, err := newHTTPTestService().Handle("response.intercept_after", jsonBytes(catalogRequest(jsonBytes(root))))
 	if err != nil {
 		t.Fatal(err)
 	}
