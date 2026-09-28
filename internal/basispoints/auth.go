@@ -210,9 +210,10 @@ func authData(raw []byte, fileName string, c credential) map[string]any {
 		label = fileName
 	}
 	return map[string]any{
-		"Provider":    Provider,
-		"ID":          id,
-		"FileName":    fileName,
+		"Provider": Provider,
+		"ID":       id,
+		// 查询名称及其 basename 均不同于源文件，避免串模型和误判源文件编辑入口。
+		"FileName":    Provider + "/" + id,
 		"Label":       label,
 		"StorageJSON": raw,
 		"Metadata": map[string]any{
@@ -355,13 +356,6 @@ func authRefresh(raw []byte) (map[string]any, error) {
 	if !c.ExpiresAt.IsZero() && !time.Now().Before(c.ExpiresAt) {
 		return nil, fail(401, "auth_expired", "ChatGPT OAuth access token has expired")
 	}
-	fileName := request.AuthID
-	if fileName == "" {
-		fileName = "chatgpt.json"
-	}
-	if !strings.HasSuffix(fileName, ".json") {
-		fileName += ".json"
-	}
 	next := time.Now().Add(10 * time.Minute)
 	if !c.ExpiresAt.IsZero() {
 		next = c.ExpiresAt.Add(-2 * time.Minute)
@@ -369,7 +363,11 @@ func authRefresh(raw []byte) (map[string]any, error) {
 			next = time.Now().Add(time.Minute)
 		}
 	}
-	auth := authData(request.StorageJSON, fileName, c)
+	auth := authData(request.StorageJSON, "", c)
+	// 刷新契约会保留未返回的身份字段，不能把 bp-* 路由 ID 当成源文件名重新生成身份。
+	delete(auth, "ID")
+	delete(auth, "FileName")
+	delete(auth, "Label")
 	websockets := credentialWebsocketsEnabled(ExecutorRequest{StorageJSON: request.StorageJSON, AuthMetadata: request.Metadata, AuthAttributes: request.Attributes})
 	auth["Metadata"].(map[string]any)["websockets"] = websockets
 	auth["Attributes"].(map[string]string)["websockets"] = strconv.FormatBool(websockets)
