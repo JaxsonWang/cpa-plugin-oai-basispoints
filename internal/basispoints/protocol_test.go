@@ -33,8 +33,8 @@ func TestPrepareResponsesBodyStripsToolsAndUsesNaturalLanguageCatalog(t *testing
 	if _, exists := body["tools"]; exists {
 		t.Fatal("upstream body still contains tools")
 	}
-	if got := body["reasoning_effort"]; got != "xhigh" {
-		t.Fatalf("reasoning_effort = %v, want xhigh", got)
+	if got := body["reasoning_effort"]; got != "max" {
+		t.Fatalf("reasoning_effort = %v, want max", got)
 	}
 	items, ok := body["input"].([]any)
 	if !ok || len(items) < 2 {

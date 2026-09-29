@@ -252,7 +252,7 @@ func (s *Service) status() map[string]any {
 		"upstream_transport":           cfg.UpstreamTransport,
 		"ws_handshake_timeout_seconds": cfg.WSHandshakeTimeoutSeconds,
 		"stopped":                      stopped,
-		"reasoning_efforts":            []string{"low", "medium", "high", "xhigh", "ultra"},
+		"reasoning_efforts":            []string{"low", "medium", "high", "xhigh", "max", "ultra"},
 	}
 }
 

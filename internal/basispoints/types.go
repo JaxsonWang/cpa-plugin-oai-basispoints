@@ -21,7 +21,7 @@ const (
 )
 
 var supportedReasoningEfforts = map[string]struct{}{
-	"low": {}, "medium": {}, "high": {}, "xhigh": {}, "ultra": {},
+	"low": {}, "medium": {}, "high": {}, "xhigh": {}, "max": {}, "ultra": {},
 }
 
 // APIError carries a downstream HTTP status through the CPA plugin envelope.
@@ -220,7 +220,7 @@ func normalizeEffort(value any) string {
 	s, _ := value.(string)
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
-	case "x-high", "extra-high", "extra_high", "max":
+	case "x-high", "extra-high", "extra_high":
 		s = "xhigh"
 	}
 	if _, ok := supportedReasoningEfforts[s]; ok {
