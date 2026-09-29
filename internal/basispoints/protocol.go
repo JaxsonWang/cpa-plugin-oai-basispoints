@@ -409,6 +409,7 @@ func translateInputItems(rawInput any) []any {
 		if itemType == "item_reference" || itemType == "additional_tools" {
 			continue
 		}
+		// agent_message 的 author/recipient 是原生协议字段，不能作为客户端元数据剥离。
 		result = append(result, item)
 	}
 	return result
