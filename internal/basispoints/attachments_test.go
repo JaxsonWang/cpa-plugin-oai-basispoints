@@ -145,8 +145,8 @@ func TestInlineImageUploadWireContract(t *testing.T) {
 				if len(parts) != 2 || received["reasoning_effort"] != "xhigh" || received["stream"] != stream {
 					t.Fatal("request content or settings changed")
 				}
-				for i, detail := range []string{"high", "auto"} {
-					if !reflect.DeepEqual(objectValue(parts[i]), map[string]any{"type": "input_image", "file_id": "file-uploaded", "detail": detail}) {
+				for i := range parts {
+					if !reflect.DeepEqual(objectValue(parts[i]), map[string]any{"type": "input_image", "file_id": "file-uploaded"}) {
 						t.Fatal("incorrect image reference")
 					}
 				}
@@ -307,7 +307,6 @@ func TestImageUploadPreservesOtherInputKinds(t *testing.T) {
 	dataURL, _ := testImageDataURL(t)
 	source := map[string]any{"input": []any{
 		map[string]any{"role": "user", "content": []any{
-			map[string]any{"type": "input_image", "file_id": "file-existing", "detail": "high"},
 			map[string]any{"type": "input_image", "image_url": "https://example.test/image.png", "detail": "auto"},
 		}},
 		map[string]any{"type": "function_call_output", "output": []any{map[string]any{"type": "input_image", "image_url": dataURL}}},
@@ -323,7 +322,69 @@ func TestImageUploadPreservesOtherInputKinds(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(jsonBytes(source)) != before {
-		t.Fatal("modified existing ID, remote URL, or tool output")
+		t.Fatal("modified remote URL or tool output")
+	}
+}
+
+func TestImageFileReferencesUseOnlyTypeAndFileID(t *testing.T) {
+	for _, detail := range []any{nil, "auto", "low", "high", "original"} {
+		for _, uploaded := range []bool{false, true} {
+			t.Run(fmt.Sprintf("detail=%v/uploaded=%t", detail, uploaded), func(t *testing.T) {
+				part := map[string]any{"type": "input_image", "file_id": "file-existing", "extra": "client-metadata"}
+				if detail != nil {
+					part["detail"] = detail
+				}
+				wantID := "file-existing"
+				if uploaded {
+					delete(part, "file_id")
+					part["image_url"], _ = testImageDataURL(t)
+					wantID = "file-uploaded"
+				}
+				request := imageRequest(part)
+				before := string(request.Payload)
+				service := newHTTPTestService()
+				uploads := 0
+				service.SetHost(func(method string, payload any, out any) error {
+					uploads++
+					if !uploaded || method != "host.http.do" || !strings.HasSuffix(payload.(map[string]any)["url"].(string), "/attachments") {
+						t.Fatal("unexpected host call")
+					}
+					*out.(*upstreamResponse) = upstreamResponse{StatusCode: 200, Body: jsonBytes(map[string]any{"openai_file_id": wantID})}
+					return nil
+				})
+				body, _, err := service.prepareRequest(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := map[string]any{"type": "input_image", "file_id": wantID}
+				if got := objectValue(lastUserContent(body)[0]); !reflect.DeepEqual(got, want) {
+					t.Fatalf("image reference = %v, want %v", got, want)
+				}
+				if (uploaded && uploads != 1) || (!uploaded && uploads != 0) || string(request.Payload) != before {
+					t.Fatal("image normalization changed source or upload count")
+				}
+			})
+		}
+	}
+}
+
+func TestImageFileReferencesRejectConflictingURLs(t *testing.T) {
+	dataURL, _ := testImageDataURL(t)
+	for _, imageURL := range []string{dataURL, "https://private.example/image.png?secret=private-token"} {
+		service := newHTTPTestService()
+		service.SetHost(func(string, any, any) error {
+			t.Fatal("conflicting image references reached network")
+			return nil
+		})
+		request := imageRequest(map[string]any{"type": "input_image", "image_url": imageURL, "file_id": "file-private-id"})
+		_, _, err := service.prepareRequest(request)
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Status != 400 || apiErr.Kind != "invalid_image" || !strings.Contains(err.Error(), "input[1].content[0]") {
+			t.Fatalf("expected indexed invalid image error, got %v", err)
+		}
+		if strings.Contains(err.Error(), imageURL) || strings.Contains(err.Error(), "private") {
+			t.Fatal("conflicting image diagnostic exposed private input")
+		}
 	}
 }
 

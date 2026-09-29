@@ -79,6 +79,7 @@ func (c *attachmentCache) getOrUpload(key [sha256.Size]byte, upload func() (stri
 
 type inlineImage struct {
 	mediaType string
+	filename  string
 	data      []byte
 }
 
@@ -108,7 +109,22 @@ func decodeInlineImage(dataURL string) (inlineImage, error) {
 	if err != nil || len(data) == 0 {
 		return inlineImage{}, fail(400, "invalid_image", "input_image data URL contains empty or invalid image data")
 	}
-	return inlineImage{mediaType: mediaType, data: data}, nil
+	// 以字节签名确定格式，避免 MIME 别名或系统扩展名数据库产生无后缀、.jfif 等文件名。
+	mediaType = http.DetectContentType(data)
+	var extension string
+	switch mediaType {
+	case "image/png":
+		extension = ".png"
+	case "image/jpeg":
+		extension = ".jpeg"
+	case "image/gif":
+		extension = ".gif"
+	case "image/webp":
+		extension = ".webp"
+	default:
+		return inlineImage{}, fail(400, "invalid_image", "input_image bytes must identify a supported format: PNG, JPEG, GIF, or WebP")
+	}
+	return inlineImage{mediaType: mediaType, filename: "image" + extension, data: data}, nil
 }
 
 func attachmentURL(responsesURL string) (string, error) {
@@ -132,42 +148,43 @@ func (s *Service) uploadInputImages(request ExecutorRequest, body map[string]any
 		var updated []any
 		for j, value := range parts {
 			part := objectValue(value)
-			imageURL := stringValue(part["image_url"])
-			if stringValue(part["type"]) != "input_image" || len(imageURL) < 5 || !strings.EqualFold(imageURL[:5], "data:") {
+			if stringValue(part["type"]) != "input_image" {
 				continue
 			}
-			if stringValue(part["file_id"]) != "" {
-				return fail(400, "invalid_image", "input_image cannot contain both image_url and file_id")
+			imageURL := stringValue(part["image_url"])
+			fileID := stringValue(part["file_id"])
+			if fileID != "" && imageURL != "" {
+				return fail(400, "invalid_image", fmt.Sprintf("input[%d].content[%d]: input_image cannot contain both image_url and file_id", i, j))
 			}
-			image, err := decodeInlineImage(imageURL)
-			if err != nil {
-				return err
-			}
-			endpoint, err := attachmentURL(cfg.ResponsesURL)
-			if err != nil {
-				return err
-			}
-			hash := sha256.New()
-			_, _ = hash.Write(jsonBytes([]string{endpoint, c.AccountID, c.AuthMode, c.AccessToken, image.mediaType}))
-			_, _ = hash.Write(image.data)
-			var key [sha256.Size]byte
-			copy(key[:], hash.Sum(nil))
-			fileID, err := s.attachments.getOrUpload(key, func() (string, error) {
-				return s.uploadImage(request, endpoint, image, c)
-			})
-			if err != nil {
-				return err
+			if fileID == "" {
+				if len(imageURL) < 5 || !strings.EqualFold(imageURL[:5], "data:") {
+					continue
+				}
+				image, err := decodeInlineImage(imageURL)
+				if err != nil {
+					return fail(400, "invalid_image", fmt.Sprintf("input[%d].content[%d]: %s", i, j, err))
+				}
+				endpoint, err := attachmentURL(cfg.ResponsesURL)
+				if err != nil {
+					return err
+				}
+				hash := sha256.New()
+				_, _ = hash.Write(jsonBytes([]string{endpoint, c.AccountID, c.AuthMode, c.AccessToken, image.mediaType}))
+				_, _ = hash.Write(image.data)
+				var key [sha256.Size]byte
+				copy(key[:], hash.Sum(nil))
+				fileID, err = s.attachments.getOrUpload(key, func() (string, error) {
+					return s.uploadImage(request, endpoint, image, c)
+				})
+				if err != nil {
+					return err
+				}
 			}
 			if updated == nil {
 				updated = append([]any(nil), parts...)
 			}
-			copy := cloneObject(part)
-			delete(copy, "image_url")
-			copy["file_id"] = fileID
-			if _, exists := copy["detail"]; !exists {
-				copy["detail"] = "auto"
-			}
-			updated[j] = copy
+			// Basis Points 的文件引用不接受公开 Responses API 的 detail 等字段。
+			updated[j] = map[string]any{"type": "input_image", "file_id": fileID}
 		}
 		if updated != nil {
 			copy := cloneObject(item)
@@ -181,12 +198,8 @@ func (s *Service) uploadInputImages(request ExecutorRequest, body map[string]any
 func (s *Service) uploadImage(request ExecutorRequest, endpoint string, image inlineImage, c credential) (string, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	filename := "image"
-	if extensions, _ := mime.ExtensionsByType(image.mediaType); len(extensions) > 0 {
-		filename += extensions[0]
-	}
 	partHeaders := make(textproto.MIMEHeader)
-	partHeaders.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "file", "filename": filename}))
+	partHeaders.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "file", "filename": image.filename}))
 	partHeaders.Set("Content-Type", image.mediaType)
 	part, err := writer.CreatePart(partHeaders)
 	if err != nil {

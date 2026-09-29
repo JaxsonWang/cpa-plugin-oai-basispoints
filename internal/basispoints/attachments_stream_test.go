@@ -35,7 +35,7 @@ func TestUploadedImageCompletesStreamThroughHostJSON(t *testing.T) {
 				return err
 			}
 			part := objectValue(lastUserContent(body)[0])
-			if part["file_id"] != "file-stream-json" || part["image_url"] != nil {
+			if len(part) != 2 || part["type"] != "input_image" || part["file_id"] != "file-stream-json" {
 				return fmt.Errorf("stream request lost image reference")
 			}
 			result = map[string]any{"status_code": 200, "stream_id": "json-upstream", "headers": map[string][]string{"Content-Type": {"text/event-stream"}}}

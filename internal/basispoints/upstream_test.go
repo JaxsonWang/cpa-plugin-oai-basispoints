@@ -121,3 +121,26 @@ func TestUpstreamDiagnosticReportsOnlySafeServiceTier(t *testing.T) {
 		t.Fatal("missing absent tier diagnostic")
 	}
 }
+
+func TestUpstreamImageDiagnosticListsOnlyBoundedLocations(t *testing.T) {
+	parts := []any{
+		map[string]any{"type": "input_text", "text": "private-prompt"},
+		map[string]any{"type": "input_image", "file_id": "file-private-id"},
+		map[string]any{"type": "input_image", "image_url": "https://private.example/image.png?secret=private-token"},
+		map[string]any{"type": "input_image", "image_url": "data:image/png;base64,private-image-data"},
+		map[string]any{"type": "input_image"},
+	}
+	for i := 0; i < 13; i++ {
+		parts = append(parts, map[string]any{"type": "input_image", "file_id": "file-private-extra"})
+	}
+	body := map[string]any{"input": []any{messageItem("developer", "private-instructions"), map[string]any{"role": "user", "content": parts}}}
+	err := upstreamRequestError(400, []byte(`{"message":"unsupported image format"}`), body, credential{})
+	for _, want := range []string{"input_images=17", "input[1].content[1]:file_id", "input[1].content[2]:image_url", "input[1].content[3]:data_url", "input[1].content[4]:missing", "...(1 more)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("missing %q in diagnostic: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "private") || strings.Contains(err.Error(), "content[17]") {
+		t.Fatal("image diagnostic exposed input content or exceeded the location limit")
+	}
+}
