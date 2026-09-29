@@ -1,0 +1,203 @@
+package basispoints
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+type hostCredentialFixture struct {
+	mu      sync.Mutex
+	entries []hostAuthEntry
+	files   map[string]string
+	gets    []string
+}
+
+func (f *hostCredentialFixture) host(method string, payload any, out any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	request := payload.(map[string]any)
+	var result any
+	switch method {
+	case "host.auth.list":
+		result = map[string]any{"files": f.entries}
+	case "host.auth.get":
+		index := request["auth_index"].(string)
+		f.gets = append(f.gets, index)
+		raw, found := f.files[index]
+		if !found {
+			return errors.New("not found")
+		}
+		result = map[string]any{"auth_index": index, "json": json.RawMessage(raw)}
+	default:
+		return fmt.Errorf("unexpected callback %s", method)
+	}
+	return json.Unmarshal(jsonBytes(result), out)
+}
+
+func hostModeService(t *testing.T) *Service {
+	t.Helper()
+	svc := newHTTPTestService()
+	if _, err := svc.Handle("plugin.register", jsonBytes(map[string]any{"config_yaml": []byte("credential_source: host\ndata_dir: \"\"\nupstream_transport: http\n")})); err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+func codexFile(token string, expires time.Time) string {
+	return string(jsonBytes(map[string]any{
+		"type": "codex", "access_token": token, "refresh_token": "fixture-refresh",
+		"account_id": "fixture-account", "expired": expires.UTC().Format(time.RFC3339),
+	}))
+}
+
+func TestHostCredentialModeLeavesCodexFilesToHost(t *testing.T) {
+	svc := hostModeService(t)
+	raw := []byte(codexFile("fixture-token", time.Now().Add(time.Hour)))
+	result, err := svc.Handle("auth.parse", jsonBytes(authParseRequest{Provider: AuthProviderID, FileName: "codex.json", RawJSON: raw}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 未接管解析时，宿主按原生 codex 类型加载，不产生会跳过持久化的 plugin_virtual 认证。
+	if objectValue(result)["Handled"] != false {
+		t.Fatalf("host mode must not expand plugin auths: %#v", result)
+	}
+	capabilities := objectValue(registration(svc.config())["capabilities"])
+	if capabilities["auth_provider"] != false || capabilities["model_router"] != true {
+		t.Fatalf("host mode capabilities = %#v", capabilities)
+	}
+	virtual := objectValue(registration(defaultConfig())["capabilities"])
+	if virtual["auth_provider"] != true || virtual["model_router"] != false {
+		t.Fatalf("default mode must keep the existing auth provider: %#v", virtual)
+	}
+}
+
+func TestHostCredentialModeRoutesOnlyConfiguredAliases(t *testing.T) {
+	svc := hostModeService(t)
+	for model, handled := range map[string]bool{DefaultModelID: true, DefaultUpstreamModel: false, "unknown": false} {
+		result, err := svc.Handle("model.route", jsonBytes(map[string]any{"RequestedModel": model}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		route := objectValue(result)
+		if route["Handled"] != handled || (handled && route["TargetKind"] != "self") {
+			t.Fatalf("route %s = %#v", model, route)
+		}
+	}
+	result, err := NewService().Handle("model.route", jsonBytes(map[string]any{"RequestedModel": DefaultModelID}))
+	if err != nil || objectValue(result)["Handled"] != false {
+		t.Fatalf("default mode must not route: %#v %v", result, err)
+	}
+}
+
+func TestHostCredentialModeReadsCurrentHostCredential(t *testing.T) {
+	var authorization []string
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		authorization = append(authorization, r.Header.Get("Authorization"))
+		mu.Unlock()
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`))
+	}))
+	defer server.Close()
+
+	svc := hostModeService(t)
+	svc.cfg.ResponsesURL = server.URL
+	fixture := &hostCredentialFixture{
+		entries: []hostAuthEntry{
+			{Index: "native", Name: "native.json", Provider: AuthProviderID, Path: "/auths/native.json"},
+			{Index: "runtime", Name: "runtime", Provider: AuthProviderID, Path: "/auths/runtime.json", Runtime: true},
+			{Index: "disabled", Name: "disabled.json", Provider: AuthProviderID, Path: "/auths/disabled.json", Disabled: true},
+			{Index: "other", Name: "other.json", Provider: "claude", Path: "/auths/other.json"},
+		},
+		files: map[string]string{"native": codexFile("token-before-refresh", time.Now().Add(time.Hour))},
+	}
+	svc.SetHost(func(method string, payload any, out any) error {
+		if method == "host.http.do" {
+			request := payload.(map[string]any)
+			req, _ := http.NewRequest(request["method"].(string), request["url"].(string), strings.NewReader(string(request["body"].([]byte))))
+			req.Header = request["headers"].(http.Header)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			return json.Unmarshal(jsonBytes(map[string]any{"StatusCode": resp.StatusCode, "Headers": resp.Header, "Body": body}), out)
+		}
+		return fixture.host(method, payload, out)
+	})
+	execute := func() {
+		t.Helper()
+		_, err := svc.Handle("executor.execute", jsonBytes(ExecutorRequest{
+			Model: DefaultModelID, Format: "openai-response", SourceFormat: "openai-response",
+			Payload: []byte(`{"model":"` + DefaultModelID + `","input":"hello"}`),
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	execute()
+	// 宿主刷新并持久化后，下一次请求必须读到新 token，而不是解析时的快照。
+	fixture.mu.Lock()
+	fixture.files["native"] = codexFile("token-after-refresh", time.Now().Add(time.Hour))
+	fixture.mu.Unlock()
+	execute()
+	if len(authorization) != 2 || authorization[0] != "Bearer token-before-refresh" || authorization[1] != "Bearer token-after-refresh" {
+		t.Fatalf("upstream authorization = %v", authorization)
+	}
+	for _, index := range fixture.gets {
+		if index != "native" {
+			t.Fatalf("read unavailable or foreign credential %q", index)
+		}
+	}
+}
+
+func TestHostCredentialModeSkipsExpiredAndReportsMissing(t *testing.T) {
+	svc := hostModeService(t)
+	fixture := &hostCredentialFixture{
+		entries: []hostAuthEntry{
+			{Index: "expired", Name: "expired.json", Provider: AuthProviderID, Path: "/auths/expired.json"},
+			{Index: "valid", Name: "valid.json", Provider: AuthProviderID, Path: "/auths/valid.json"},
+		},
+		files: map[string]string{
+			"expired": codexFile("expired-token", time.Now().Add(-time.Minute)),
+			"valid":   codexFile("valid-token", time.Now().Add(time.Hour)),
+		},
+	}
+	svc.SetHost(fixture.host)
+	for range 2 {
+		selected, err := svc.withHostCredential(ExecutorRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c, _ := parseCredential(selected.StorageJSON); c.AccessToken != "valid-token" || selected.AuthID != "valid" {
+			t.Fatalf("selected %q with token %q", selected.AuthID, c.AccessToken)
+		}
+	}
+	fixture.entries = nil
+	_, err := svc.withHostCredential(ExecutorRequest{})
+	var apiError *APIError
+	if !errors.As(err, &apiError) || apiError.Status != 503 || apiError.Kind != "auth_unavailable" {
+		t.Fatalf("missing credential error = %v", err)
+	}
+}
+
+func TestCredentialSourceValidation(t *testing.T) {
+	for value, valid := range map[string]bool{"": true, "virtual": true, " HOST ": true, "file": false} {
+		cfg := defaultConfig()
+		cfg.CredentialSource = value
+		if err := cfg.normalize(); (err == nil) != valid {
+			t.Fatalf("credential_source %q validation = %v", value, err)
+		}
+	}
+}

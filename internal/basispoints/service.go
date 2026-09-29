@@ -106,6 +106,9 @@ func (s *Service) Handle(method string, raw json.RawMessage) (any, error) {
 		if err := json.Unmarshal(raw, &request); err != nil {
 			return nil, err
 		}
+		if s.hostCredentialMode() {
+			return s.authParseHostMode(), nil
+		}
 		result, err := parseAuthRequest(request)
 		if err == nil && request.Host.AuthDir != "" {
 			s.mu.Lock()
@@ -117,6 +120,8 @@ func (s *Service) Handle(method string, raw json.RawMessage) (any, error) {
 		return s.registerSourceAuthManagement(raw)
 	case "management.handle":
 		return s.handleSourceAuthManagement(raw)
+	case "model.route":
+		return s.routeModel(raw)
 	case "request.intercept_before":
 		return map[string]any{}, nil
 	case "request.intercept_after":
@@ -159,6 +164,12 @@ func (s *Service) execute(raw json.RawMessage, stream bool) (any, error) {
 	var request ExecutorRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return nil, fail(400, "invalid_request", "executor request is invalid")
+	}
+	if s.hostCredentialMode() {
+		var err error
+		if request, err = s.withHostCredential(request); err != nil {
+			return nil, err
+		}
 	}
 	body, credential, err := s.prepareRequest(request)
 	if err != nil {
@@ -276,10 +287,12 @@ func registration(cfg Config) map[string]any {
 				{"Name": "max_response_bytes", "Type": "integer", "Description": "Maximum upstream response size."},
 				{"Name": "auth_mode", "Type": "string", "Description": "Basis Points authentication mode; normally chatgpt."},
 				{"Name": "tools_version_id", "Type": "string", "Description": "Optional authoritative Basis Points tools catalog version."},
+				{"Name": "credential_source", "Type": "string", "Description": "virtual：插件展开虚拟认证（默认）；host：Codex 文件交由 CPA 原生刷新和持久化，执行时读取宿主最新凭据。"},
 			},
 		},
 		"capabilities": map[string]any{
-			"auth_provider":            true,
+			"auth_provider":            cfg.CredentialSource != CredentialSourceHost,
+			"model_router":             cfg.CredentialSource == CredentialSourceHost,
 			"model_provider":           true,
 			"executor":                 true,
 			"executor_model_scope":     "both",

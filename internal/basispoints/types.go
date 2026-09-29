@@ -18,6 +18,11 @@ const (
 	DefaultResponsesURL  = "https://bps.openai.com/basispoints/api/responses"
 	DefaultUpstreamModel = "gpt-6-astra"
 	DefaultModelID       = "gpt-6-astra-basispoints"
+
+	// CredentialSourceVirtual 由插件解析 Codex 文件并展开虚拟认证；CredentialSourceHost
+	// 交还宿主原生管理 Codex 文件，执行时再读取宿主维护的最新凭据。
+	CredentialSourceVirtual = "virtual"
+	CredentialSourceHost    = "host"
 )
 
 var supportedReasoningEfforts = map[string]struct{}{
@@ -126,6 +131,7 @@ type Config struct {
 	MaxResponseBytes          int               `yaml:"max_response_bytes" json:"max_response_bytes"`
 	AuthMode                  string            `yaml:"auth_mode" json:"auth_mode"`
 	ToolsVersionID            string            `yaml:"tools_version_id" json:"tools_version_id"`
+	CredentialSource          string            `yaml:"credential_source" json:"credential_source"`
 }
 
 func defaultConfig() Config {
@@ -139,6 +145,7 @@ func defaultConfig() Config {
 		TimeoutSeconds:            300,
 		MaxResponseBytes:          64 << 20,
 		AuthMode:                  "chatgpt",
+		CredentialSource:          CredentialSourceVirtual,
 	}
 }
 
@@ -164,6 +171,13 @@ func (c *Config) normalize() error {
 	c.UpstreamModel = strings.TrimSpace(c.UpstreamModel)
 	if c.UpstreamModel == "" {
 		c.UpstreamModel = DefaultUpstreamModel
+	}
+	c.CredentialSource = strings.ToLower(strings.TrimSpace(c.CredentialSource))
+	if c.CredentialSource == "" {
+		c.CredentialSource = CredentialSourceVirtual
+	}
+	if c.CredentialSource != CredentialSourceVirtual && c.CredentialSource != CredentialSourceHost {
+		return fail(400, "invalid_config", "credential_source must be virtual or host")
 	}
 	c.AuthMode = strings.TrimSpace(c.AuthMode)
 	if c.AuthMode == "" {

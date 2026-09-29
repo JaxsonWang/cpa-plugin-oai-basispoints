@@ -59,6 +59,15 @@ plugins:
       # 仅在已取得确切版本 ID 时填写，不要自行编造。
       tools_version_id: ""
 
+      # 凭据来源：virtual（默认）或 host。
+      # virtual：插件接管 type: codex 文件，展开原生 + Basis Points 两条虚拟认证。
+      #   未修改的 CPA 不持久化虚拟认证的刷新结果：重启后会加载已轮换失效的 refresh_token，
+      #   Basis Points 记录也不跟随原生刷新，access_token 到期后需重新导入源凭据。
+      # host：插件不接管 Codex 文件，由 CPA 原生加载、刷新并写回源文件；执行 Basis Points
+      #   请求时通过 host.auth.get 读取宿主当前凭据，按顺序轮询未禁用的 Codex 认证。
+      #   别名模型由插件路由器直接交给本执行器；源认证 WS 编辑入口在此模式下不可用。
+      credential_source: virtual
+
       # 非敏感配置的持久化目录，默认值为 plugins/oai-basispoints-data。
       # 当前实现会先读取 YAML，再用此目录中已有的 settings.json 覆盖对应字段。
       # 本示例留空：只由 YAML 管理配置，避免旧文件覆盖模型列表和映射。

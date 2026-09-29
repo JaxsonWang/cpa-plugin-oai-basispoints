@@ -1,5 +1,11 @@
 # 更新日志
 
+## 未发布
+
+- 新增 `credential_source: host`（默认仍为 `virtual`，行为不变）。未修改的 CPA 会把插件展开的多条认证标记为 `plugin_virtual` 并跳过持久化，导致原生记录刷新后的 `refresh_token` 不写回源文件，重启后加载已轮换失效的旧值；Basis Points 记录也不随原生刷新，access_token 到期后请求失败。
+- host 模式不接管 Codex 文件解析，由 CPA 原生刷新和持久化；插件改用模型路由器承接别名模型，执行时经 `host.auth.list` / `host.auth.get` 读取宿主当前凭据，不修改 CPA 主程序。
+- 使用未修改的 CPA v7.3.7 隔离验证：插件加载后只产生 1 条原生认证；管理接口强制刷新后源文件 access/refresh token 均更新，下一次 Basis Points 请求使用新 token；容器重启后原生及 Basis Points 请求、再次刷新均成功。文本、图片、function 工具、SSE 流式通过。
+
 ## v0.2.8 — 2026-09-29（UTC+8）
 
 - 修正工具中继说明中的固定示例：只为本轮允许的工具生成示例，使用真实完整名称、声明类型和匹配的参数结构，避免把函数形式的 `apply_patch` 错教成原始文本工具，或示范调用目录外、命名空间不匹配及本轮禁用的工具。

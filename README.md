@@ -32,6 +32,15 @@ plugins:
 
 插件的 `auth.parse` 会接管 CPA 中 `type: codex` 的 OAuth 文件，并为同一个文件展开两条内存认证：一条保留原生 `codex`，另一条是 `oai-basispoints` 虚拟认证。这样现有 Codex 模型继续使用 CPA 原生执行器，`gpt-6-astra-basispoints` 则使用本插件；解析和执行请求不会生成或改写 OAuth 文件，只有用户通过下述源认证入口保存时才修改原文件的 `websockets` 字段。原生 Codex 记录保留源 OAuth 元数据，供原生执行器读取访问令牌和刷新令牌。注意：当前 CPA 会把这两条记录都标记为虚拟认证，不持久化原生记录的刷新结果；Basis Points 记录也不会自动同步原生记录在内存中刷新的 JWT。源 JWT 过期时，需要先通过 CPA 更新或重新导入源 OAuth 凭据，再重新加载，单纯重载过期文件无效。
 
+## 凭据来源与刷新持久化
+
+默认 `credential_source: virtual` 保持上述展开方式。需要让 CPA 长期自动维护同一份 OAuth 凭据时，设置 `credential_source: host`：
+
+- 插件不再接管 `type: codex` 文件解析，CPA 按原生 Codex 认证加载、刷新，并把轮换后的 `refresh_token` 写回源文件；重启后读取的是最新凭据。
+- 插件改为声明模型路由器，只把配置中的别名模型交给本执行器；原生 Codex 模型的调度、冷却与重试不受影响。
+- 每次执行通过 `host.auth.list` / `host.auth.get` 读取宿主当前凭据，按稳定顺序轮询未禁用、非运行时的 Codex 认证；access_token 已过期的凭据跳过，均不可用时返回 503 `auth_unavailable`。原生通道的过载冷却不作为跳过条件。
+- 此模式不声明认证提供方，CPA 不再向插件提供认证目录，源认证 WS 编辑页面不可用；WS 开关仍读取源文件的 `websockets` 字段，可直接编辑源文件或使用 CPA 管理接口修改。
+
 ## 构建
 
 ```bash
