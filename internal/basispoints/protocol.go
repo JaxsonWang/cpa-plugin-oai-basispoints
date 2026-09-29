@@ -967,6 +967,9 @@ func syntheticStream(response map[string]any) []byte {
 				added["status"] = "in_progress"
 				added["content"] = []any{}
 			}
+			if stringValue(item["type"]) == "reasoning" {
+				added["summary"] = []any{}
+			}
 			if field != "" {
 				added[field] = ""
 				if field == "arguments" {
@@ -982,6 +985,8 @@ func syntheticStream(response map[string]any) []byte {
 				emit(event+".done", map[string]any{"output_index": index, "item_id": item["id"], field: text})
 			} else if stringValue(item["type"]) == "message" {
 				emitMessageContent(emit, index, item)
+			} else if stringValue(item["type"]) == "reasoning" {
+				emitReasoningSummary(emit, index, item)
 			}
 			emit("response.output_item.done", map[string]any{"output_index": index, "item": item})
 		}
@@ -993,6 +998,25 @@ func syntheticStream(response map[string]any) []byte {
 	emit(terminalEvent, map[string]any{"response": response})
 	builder.WriteString("data: [DONE]\n\n")
 	return []byte(builder.String())
+}
+
+func emitReasoningSummary(emit func(string, map[string]any), outputIndex int, item map[string]any) {
+	summary, _ := item["summary"].([]any)
+	for summaryIndex, value := range summary {
+		part := objectValue(value)
+		if part["type"] != "summary_text" {
+			continue
+		}
+		added := cloneObject(part)
+		added["text"] = ""
+		emit("response.reasoning_summary_part.added", map[string]any{"output_index": outputIndex, "item_id": item["id"], "summary_index": summaryIndex, "part": added})
+		text, _ := part["text"].(string)
+		if text != "" {
+			emit("response.reasoning_summary_text.delta", map[string]any{"output_index": outputIndex, "item_id": item["id"], "summary_index": summaryIndex, "delta": text})
+		}
+		emit("response.reasoning_summary_text.done", map[string]any{"output_index": outputIndex, "item_id": item["id"], "summary_index": summaryIndex, "text": text})
+		emit("response.reasoning_summary_part.done", map[string]any{"output_index": outputIndex, "item_id": item["id"], "summary_index": summaryIndex, "part": part})
+	}
 }
 
 // 按原始 content 下标回放，不能因空正文或拒绝片段而压缩索引。

@@ -37,6 +37,7 @@ func TestMessageStreamPreservesContentLifecycle(t *testing.T) {
 				before := string(jsonBytes(response))
 				var assembled []any
 				var visible string
+				var reasoningSummary string
 				var deltaIndexes []int
 				var messageEvents []string
 				added, done, terminal := 0, 0, 0
@@ -44,7 +45,12 @@ func TestMessageStreamPreservesContentLifecycle(t *testing.T) {
 				for _, event := range clientStreamEvents(t, syntheticStream(response)) {
 					kind := stringValue(event["type"])
 					if strings.HasPrefix(kind, "response.reasoning") {
-						t.Fatalf("reasoning unexpectedly replayed: %#v", event)
+						if event["item_id"] != reasoning["id"] || event["output_index"] != float64(0) || event["summary_index"] != float64(0) {
+							t.Fatalf("reasoning summary identity changed: %#v", event)
+						}
+						if kind == "response.reasoning_summary_text.delta" {
+							reasoningSummary += event["delta"].(string)
+						}
 					}
 					switch kind {
 					case "response.output_item.added", "response.output_item.done":
@@ -128,6 +134,9 @@ func TestMessageStreamPreservesContentLifecycle(t *testing.T) {
 				}
 				if visible != tc.text || !reflect.DeepEqual(deltaIndexes, tc.indexes) || added != 1 || done != 1 || terminal != 1 || string(jsonBytes(response)) != before {
 					t.Fatalf("invalid replay: text=%q indexes=%v added=%d done=%d terminal=%d", visible, deltaIndexes, added, done, terminal)
+				}
+				if reasoningSummary != "not visible text" {
+					t.Fatalf("reasoning summary was lost or mixed into message text: %q", reasoningSummary)
 				}
 				if tc.name == "pong" {
 					want := []string{"response.output_item.added", "response.content_part.added", "response.output_text.delta", "response.output_text.done", "response.content_part.done", "response.output_item.done"}

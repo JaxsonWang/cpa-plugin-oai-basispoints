@@ -73,8 +73,13 @@ func TestIncrementalDeliveryPreservesByteSplitLifecycle(t *testing.T) {
 }
 
 func TestStreamingClientDisconnectAndQuiesceCloseUpstream(t *testing.T) {
-	for _, mode := range []string{"disconnect", "quiesce"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, scenario := range []string{"disconnect/text", "quiesce/text", "disconnect/reasoning", "quiesce/reasoning"} {
+		mode, lead, _ := strings.Cut(scenario, "/")
+		t.Run(scenario, func(t *testing.T) {
+			prefix, deltaType := incrementalPrefix("hello"), "response.output_text.delta"
+			if lead == "reasoning" {
+				prefix, deltaType = reasoningStreamPrefix("hello"), "response.reasoning_summary_text.delta"
+			}
 			svc := newHTTPTestService()
 			firstText, upstreamClosed, closed := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			var firstOnce, closeOnce sync.Once
@@ -86,7 +91,7 @@ func TestStreamingClientDisconnectAndQuiesceCloseUpstream(t *testing.T) {
 				case "host.http.stream_read":
 					reads++
 					if reads == 1 {
-						*out.(*streamChunk) = streamChunk{Payload: incrementalPrefix("hello")}
+						*out.(*streamChunk) = streamChunk{Payload: prefix}
 					} else {
 						select {
 						case <-upstreamClosed:
@@ -100,7 +105,7 @@ func TestStreamingClientDisconnectAndQuiesceCloseUpstream(t *testing.T) {
 					closeOnce.Do(func() { close(upstreamClosed) })
 				case "host.stream.emit":
 					frame := payload.(map[string]any)["payload"].([]byte)
-					if bytes.Contains(frame, []byte(`"type":"response.output_text.delta"`)) {
+					if bytes.Contains(frame, []byte(`"type":"`+deltaType+`"`)) {
 						firstOnce.Do(func() { close(firstText) })
 						if mode == "disconnect" {
 							return fmt.Errorf("client disconnected")

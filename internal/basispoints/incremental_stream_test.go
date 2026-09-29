@@ -65,18 +65,27 @@ func decodeIncrementalFrames(t *testing.T, format string, frames [][]byte) []map
 }
 
 func TestIncrementalFailureDoesNotRetryOrDeliverPartialToolBatch(t *testing.T) {
-	for _, format := range []string{"openai-response", "codex"} {
+	for _, scenario := range []string{"openai-response/text", "codex/text", "openai-response/reasoning", "codex/reasoning"} {
+		format, lead, _ := strings.Cut(scenario, "/")
 		for _, mode := range []string{"invalid_tool", "upstream_failure", "transport_failure", "truncated", "changed_text", "size_limit", "incomplete_tool", "valid_tools"} {
-			t.Run(format+"/"+mode, func(t *testing.T) {
+			t.Run(scenario+"/"+mode, func(t *testing.T) {
 				good, patch := relayFixture(t.Name()+"-good", false)
 				bad, _ := relayFixture(t.Name()+"-bad", true)
 				text := "  你好\r\n"
-				response := incrementalTerminal(text, good, bad)
+				prefix := incrementalPrefix(text)
+				terminal := incrementalTerminal
+				if lead == "reasoning" {
+					prefix = reasoningStreamPrefix(text)
+					terminal = func(text string, tail ...any) map[string]any {
+						return map[string]any{"id": "resp_incremental", "status": "completed", "output": append([]any{reasoningStreamItem(text)}, tail...)}
+					}
+				}
+				response := terminal(text, good, bad)
 				switch mode {
 				case "valid_tools":
-					response = incrementalTerminal(text, good)
+					response = terminal(text, good)
 				case "changed_text":
-					response = incrementalTerminal("different", good)
+					response = terminal("different", good)
 				case "incomplete_tool":
 					response["status"] = "incomplete"
 				}
@@ -107,7 +116,7 @@ func TestIncrementalFailureDoesNotRetryOrDeliverPartialToolBatch(t *testing.T) {
 					case "host.http.stream_read":
 						reads++
 						if reads == 1 {
-							*out.(*streamChunk) = streamChunk{Payload: incrementalPrefix(text)}
+							*out.(*streamChunk) = streamChunk{Payload: prefix}
 						} else {
 							*out.(*streamChunk) = last
 						}
@@ -146,7 +155,7 @@ func TestIncrementalFailureDoesNotRetryOrDeliverPartialToolBatch(t *testing.T) {
 				var actual string
 				tools, failures, terminals := 0, 0, 0
 				for _, event := range events {
-					if event["type"] == "response.output_text.delta" {
+					if event["type"] == "response.output_text.delta" || event["type"] == "response.reasoning_summary_text.delta" {
 						actual += event["delta"].(string)
 					}
 					if event["type"] == "response.output_item.added" {
