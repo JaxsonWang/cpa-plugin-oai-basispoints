@@ -85,7 +85,7 @@ func (d *streamDelivery) consume(event, data string) error {
 	}
 	switch kind {
 	case "error", "response.failed", "response.cancelled":
-		return fail(502, "upstream_response_failed", "Basis Points stream reported a failure")
+		return upstreamFailure(kind, value)
 	case "response.completed", "response.incomplete":
 		d.terminal = true
 		return nil
@@ -537,13 +537,15 @@ func (d *streamDelivery) finish(response map[string]any) error {
 }
 
 func (d *streamDelivery) fail(err error) error {
-	kind, message, errorType := "stream_failed", "Basis Points stream failed after response delivery began", "api_error"
+	kind, message, status := "stream_failed", "Basis Points stream failed after response delivery began", 502
+	errorType := upstreamErrorType(status)
 	var api *APIError
 	if errors.As(err, &api) {
-		kind, message = api.Kind, api.Message
-		if api.Status >= 400 && api.Status < 500 {
-			errorType = "invalid_request_error"
+		kind, message, status = api.Kind, api.Message, api.Status
+		errorType = upstreamErrorType(status)
+		if api.Type != "" {
+			errorType = api.Type
 		}
 	}
-	return d.emit(map[string]any{"type": "error", "code": kind, "message": message, "param": nil, "error": map[string]any{"type": errorType, "code": kind, "message": message}})
+	return d.emit(map[string]any{"type": "error", "status": status, "code": kind, "message": message, "param": nil, "error": map[string]any{"type": errorType, "code": kind, "message": message}})
 }

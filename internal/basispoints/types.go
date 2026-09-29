@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	Version        = "0.2.6"
+	Version        = "0.2.7"
 	Provider       = "oai-basispoints"
 	AuthProviderID = "codex"
 	PluginID       = Provider
@@ -29,11 +29,16 @@ type APIError struct {
 	Status  int
 	Kind    string
 	Message string
+	Type    string
 }
 
 func (e *APIError) Error() string {
 	if e == nil {
 		return ""
+	}
+	// 宿主通过 JSON 错误正文识别请求错误；跨 ABI 后仍需保留安全分类。
+	if e.Type != "" {
+		return string(jsonBytes(map[string]any{"error": map[string]any{"type": e.Type, "code": e.Kind, "message": e.Message}}))
 	}
 	return e.Message
 }

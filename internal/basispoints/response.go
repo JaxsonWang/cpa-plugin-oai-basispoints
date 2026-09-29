@@ -2,6 +2,7 @@ package basispoints
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -21,7 +22,13 @@ func parseResponse(raw []byte, headers http.Header) (map[string]any, error) {
 	case "":
 		kind = "missing"
 	}
-	return nil, fail(502, "invalid_upstream_response", fmt.Sprintf("%s (content_type=%s; bytes=%d)", err.Error(), kind, len(raw)))
+	var api *APIError
+	if errors.As(err, &api) {
+		annotated := *api
+		annotated.Message = fmt.Sprintf("%s (content_type=%s; bytes=%d)", api.Message, kind, len(raw))
+		return nil, &annotated
+	}
+	return nil, fail(502, "invalid_upstream_response", fmt.Sprintf("Basis Points response could not be decoded (content_type=%s; bytes=%d)", kind, len(raw)))
 }
 
 func terminalResponse(response map[string]any) (map[string]any, error) {
@@ -30,7 +37,7 @@ func terminalResponse(response map[string]any) (map[string]any, error) {
 	}
 	switch stringValue(response["status"]) {
 	case "failed", "cancelled":
-		return nil, fail(502, "upstream_response_failed", "Basis Points response failed or was cancelled")
+		return nil, upstreamFailure("response."+stringValue(response["status"]), response)
 	case "completed", "incomplete":
 	default:
 		return nil, fail(502, "invalid_upstream_response", "Basis Points response has no valid terminal status")
@@ -52,6 +59,10 @@ func parseFinalStreamResponse(raw []byte) (map[string]any, error) {
 		if reason != "" {
 			return nil, fail(502, "invalid_upstream_response", "Basis Points returned invalid JSON")
 		}
+		switch kind := stringValue(object["type"]); kind {
+		case "error", "response.failed", "response.cancelled":
+			return nil, upstreamFailure(kind, object)
+		}
 		return terminalResponse(object)
 	}
 	decoder := newSSEDecoder()
@@ -70,7 +81,7 @@ func parseFinalStreamResponse(raw []byte) (map[string]any, error) {
 		}
 		switch kind {
 		case "error", "response.failed", "response.cancelled":
-			return fail(502, "upstream_response_failed", "Basis Points stream reported a failure")
+			return upstreamFailure(kind, object)
 		case "response.completed", "response.incomplete":
 			response, err := terminalResponse(objectValue(object["response"]))
 			if err != nil {

@@ -67,7 +67,7 @@ func decodeIncrementalFrames(t *testing.T, format string, frames [][]byte) []map
 func TestIncrementalFailureDoesNotRetryOrDeliverPartialToolBatch(t *testing.T) {
 	for _, scenario := range []string{"openai-response/text", "codex/text", "openai-response/reasoning", "codex/reasoning"} {
 		format, lead, _ := strings.Cut(scenario, "/")
-		for _, mode := range []string{"invalid_tool", "upstream_failure", "transport_failure", "truncated", "changed_text", "size_limit", "incomplete_tool", "valid_tools"} {
+		for _, mode := range []string{"invalid_tool", "upstream_failure", "request_failure", "rate_limit_failure", "transport_failure", "truncated", "changed_text", "size_limit", "incomplete_tool", "valid_tools"} {
 			t.Run(scenario+"/"+mode, func(t *testing.T) {
 				good, patch := relayFixture(t.Name()+"-good", false)
 				bad, _ := relayFixture(t.Name()+"-bad", true)
@@ -93,6 +93,10 @@ func TestIncrementalFailureDoesNotRetryOrDeliverPartialToolBatch(t *testing.T) {
 				switch mode {
 				case "upstream_failure":
 					last.Payload = streamFixtureEvents(map[string]any{"type": "response.failed", "response": map[string]any{"error": map[string]any{"message": "private-upstream-message"}}})
+				case "request_failure":
+					last.Payload = streamFixtureEvents(map[string]any{"type": "response.failed", "response": map[string]any{"error": map[string]any{"code": "context_length_exceeded", "message": "private-upstream-message"}}})
+				case "rate_limit_failure":
+					last.Payload = streamFixtureEvents(map[string]any{"type": "error", "status": 429, "error": map[string]any{"type": "rate_limit_error", "message": "private-upstream-message"}})
 				case "transport_failure":
 					last.Payload, last.Error = nil, "connection reset"
 				case "truncated":
@@ -168,6 +172,12 @@ func TestIncrementalFailureDoesNotRetryOrDeliverPartialToolBatch(t *testing.T) {
 						failures++
 						if strings.Contains(string(jsonBytes(event)), "private-upstream-message") {
 							t.Fatal("leaked upstream failure body")
+						}
+						if mode == "request_failure" && (event["status"] != float64(400) || objectValue(event["error"])["code"] != "context_length_exceeded") {
+							t.Fatalf("request failure classification lost after output: %v", event)
+						}
+						if mode == "rate_limit_failure" && (event["status"] != float64(429) || objectValue(event["error"])["type"] != "rate_limit_error") {
+							t.Fatalf("rate limit misclassified after output: %v", event)
 						}
 					}
 					if event["type"] == "response.completed" || event["type"] == "response.incomplete" {

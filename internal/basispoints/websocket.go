@@ -140,14 +140,6 @@ func (s *Service) tryWebSocket(request ExecutorRequest, body map[string]any, c c
 			return nil, true, fail(502, "upstream_response_too_large", "Basis Points response exceeds configured limit")
 		}
 		wire.WriteString(frame.String())
-		if name == "error" {
-			// WS 在数据帧中携带 HTTP 等价状态；不能把参数 400/422 误报成 502。
-			if number, ok := event["status"].(json.Number); ok {
-				if status, err := number.Int64(); err == nil && status >= 400 && status <= 599 {
-					return nil, true, upstreamRequestError(int(status), jsonBytes(event), body, c)
-				}
-			}
-		}
 		if delivery != nil {
 			if err := delivery.consume(name, string(data)); err != nil {
 				return nil, true, err

@@ -330,6 +330,89 @@ func TestWebSocketApplicationErrorsPreserveStatusWithoutReplay(t *testing.T) {
 	}
 }
 
+func TestWebSocketFailureEventsPreserveClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		event  map[string]any
+		status int
+		code   string
+	}{
+		{"request", map[string]any{"type": "response.failed", "response": map[string]any{"status": "failed", "error": map[string]any{"code": "context_length_exceeded", "message": "private-upstream-message"}}}, 400, "context_length_exceeded"},
+		{"rate_limit", map[string]any{"type": "error", "status": 429, "error": map[string]any{"type": "rate_limit_error", "code": "rate_limit_exceeded", "message": "private-upstream-message"}}, 429, "rate_limit_exceeded"},
+	} {
+		for _, stream := range []bool{false, true} {
+			for _, earlyText := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/stream=%t/early=%t", tc.name, stream, earlyText), func(t *testing.T) {
+					var creates atomic.Int32
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						conn, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						defer conn.Close()
+						if _, _, err := conn.ReadMessage(); err != nil {
+							return
+						}
+						creates.Add(1)
+						if earlyText {
+							if err := writeWebSocketEvents(conn, incrementalPrefix("prefix")); err != nil {
+								t.Error(err)
+								return
+							}
+						}
+						if err := conn.WriteJSON(tc.event); err != nil {
+							t.Error(err)
+						}
+					}))
+					defer server.Close()
+					svc := NewService()
+					svc.cfg.ResponsesURL = server.URL
+					capture := &websocketCapture{closed: make(chan struct{}, 1)}
+					svc.SetHost(capture.host)
+					method := "executor.execute"
+					if stream {
+						method = "executor.execute_stream"
+					}
+					_, err := svc.Handle(method, jsonBytes(websocketRequest(stream)))
+					svc.streamWG.Wait()
+					if !stream || !earlyText {
+						api, ok := err.(*APIError)
+						if !ok || api.Status != tc.status || api.Kind != tc.code || strings.Contains(api.Error(), "private-") {
+							t.Fatalf("incorrect failure before delivery: %#v", err)
+						}
+					} else {
+						if err != nil {
+							t.Fatal(err)
+						}
+						capture.mu.Lock()
+						events := decodeIncrementalFrames(t, "openai-response", capture.frames)
+						capture.mu.Unlock()
+						failures := 0
+						for _, event := range events {
+							if event["type"] == "response.completed" || event["type"] == "response.incomplete" || strings.Contains(string(jsonBytes(event)), "private-") {
+								t.Fatalf("failure leaked private data or a terminal response: %v", event)
+							}
+							if event["type"] == "error" {
+								failures++
+								if event["status"] != float64(tc.status) || objectValue(event["error"])["code"] != tc.code {
+									t.Fatalf("classification lost after delivery: %v", event)
+								}
+							}
+						}
+						if failures != 1 {
+							t.Fatalf("error events=%d, want 1", failures)
+						}
+					}
+					if creates.Load() != 1 || capture.fallbacks.Load() != 0 {
+						t.Fatal("failed request was replayed")
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestWebSocketToolRegenerationRemainsBounded(t *testing.T) {
 	for _, earlyText := range []bool{false, true} {
 		t.Run(fmt.Sprint(earlyText), func(t *testing.T) {
