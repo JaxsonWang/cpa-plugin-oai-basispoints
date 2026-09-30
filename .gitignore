@@ -3,3 +3,4 @@ plugins/
 *.so
 *.dylib
 *.dll
+/AGENTS.md
