@@ -83,18 +83,26 @@ func (s *Service) stopStreams() {
 	}
 	scopes := s.requests
 	s.requests = nil
+	clients := s.credentialClients
+	s.credentialClients = nil
 	s.mu.Unlock()
-	for _, scope := range scopes {
-		scope.cancel()
-	}
 	for _, r := range active {
 		r.mu.Lock()
 		r.canceled = true
 		r.mu.Unlock()
+	}
+	// 先统一标记，避免父请求取消子 HTTP 时把插件停用误报为客户端断开。
+	for _, scope := range scopes {
+		scope.cancel()
+	}
+	for _, r := range active {
 		r.cancel()
 		r.closeUpstream()
 	}
 	s.streamWG.Wait()
+	for _, cached := range clients {
+		cached.client.CloseIdleConnections()
+	}
 }
 
 func (s *Service) executeStream(request ExecutorRequest, body map[string]any, c credential) (any, error) {
@@ -173,11 +181,12 @@ func (s *Service) readStreamAttempt(request ExecutorRequest, body map[string]any
 	if err := run.contextError(); err != nil {
 		return nil, err
 	}
+	request.run = run
 	upstream, err := s.upstreamStream(request, body, c)
 	if err != nil {
 		return nil, err
 	}
-	run.setClose(func() { _ = s.call("host.http.stream_close", map[string]any{"stream_id": upstream.StreamID}, nil) })
+	run.setClose(func() { s.closeHTTPStream(upstream) })
 	defer run.closeUpstream()
 	cfg := s.config()
 	deadline := time.Now().Add(time.Duration(cfg.TimeoutSeconds) * time.Second)
@@ -193,9 +202,9 @@ func (s *Service) readStreamAttempt(request ExecutorRequest, body map[string]any
 		if time.Now().After(deadline) {
 			return nil, timeoutError(cfg)
 		}
-		var chunk streamChunk
-		if err := s.call("host.http.stream_read", map[string]any{"stream_id": upstream.StreamID}, &chunk); err != nil {
-			return nil, fail(502, "upstream_transport", "Basis Points stream read failed: "+safeError(err))
+		chunk, err := s.readHTTPStream(upstream)
+		if err != nil {
+			return nil, transportError(err, "upstream_transport", "Basis Points stream read failed: ")
 		}
 		if err := run.contextError(); err != nil {
 			return nil, err

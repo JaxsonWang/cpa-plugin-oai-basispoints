@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -46,6 +45,9 @@ func hostModeService(t *testing.T) *Service {
 	t.Helper()
 	svc := newHTTPTestService()
 	if _, err := svc.Handle("plugin.register", jsonBytes(map[string]any{"config_yaml": []byte("credential_source: host\ndata_dir: \"\"\nupstream_transport: http\n")})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Handle("model.static", jsonBytes(map[string]any{"Host": map[string]any{"ProxyURL": ""}})); err != nil {
 		t.Fatal(err)
 	}
 	return svc
@@ -121,21 +123,7 @@ func TestHostCredentialModeReadsCurrentHostCredential(t *testing.T) {
 		},
 		files: map[string]string{"native": codexFile("token-before-refresh", time.Now().Add(time.Hour))},
 	}
-	svc.SetHost(func(method string, payload any, out any) error {
-		if method == "host.http.do" {
-			request := payload.(map[string]any)
-			req, _ := http.NewRequest(request["method"].(string), request["url"].(string), strings.NewReader(string(request["body"].([]byte))))
-			req.Header = request["headers"].(http.Header)
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return err
-			}
-			defer resp.Body.Close()
-			body, _ := io.ReadAll(resp.Body)
-			return json.Unmarshal(jsonBytes(map[string]any{"StatusCode": resp.StatusCode, "Headers": resp.Header, "Body": body}), out)
-		}
-		return fixture.host(method, payload, out)
-	})
+	svc.SetHost(fixture.host)
 	execute := func() {
 		t.Helper()
 		_, err := svc.Handle("executor.execute", jsonBytes(ExecutorRequest{
@@ -198,6 +186,109 @@ func TestCredentialSourceValidation(t *testing.T) {
 		cfg.CredentialSource = value
 		if err := cfg.normalize(); (err == nil) != valid {
 			t.Fatalf("credential_source %q validation = %v", value, err)
+		}
+	}
+}
+
+func TestHostCredentialRotationSkipsInvalidWithoutBias(t *testing.T) {
+	svc := hostModeService(t)
+	fixture := &hostCredentialFixture{
+		entries: []hostAuthEntry{
+			{Index: "expired", Name: "0-expired.json", Provider: AuthProviderID, Path: "/fixture/0-expired.json"},
+			{Index: "a", Name: "a.json", Provider: AuthProviderID, Path: "/fixture/a.json"},
+			{Index: "b", Name: "b.json", Provider: AuthProviderID, Path: "/fixture/b.json"},
+		},
+		files: map[string]string{
+			"expired": codexFile("expired", time.Now().Add(-time.Hour)),
+			"a":       codexFile("token-a", time.Now().Add(time.Hour)),
+			"b":       codexFile("token-b", time.Now().Add(time.Hour)),
+		},
+	}
+	svc.SetHost(fixture.host)
+	counts := map[string]int{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for range 60 {
+		wg.Go(func() {
+			selected, err := svc.withHostCredential(ExecutorRequest{})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			mu.Lock()
+			counts[selected.AuthID]++
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	if counts["a"] != 30 || counts["b"] != 30 {
+		t.Fatalf("usable credentials were not balanced: %v", counts)
+	}
+}
+
+func TestHostCredentialExhaustionKeepsDeterministicCause(t *testing.T) {
+	svc := hostModeService(t)
+	fixture := &hostCredentialFixture{
+		entries: []hostAuthEntry{
+			{Index: "expired", Name: "a.json", Provider: AuthProviderID, Path: "/fixture/a.json"},
+			{Index: "missing", Name: "b.json", Provider: AuthProviderID, Path: "/fixture/b.json"},
+		},
+		files: map[string]string{"expired": codexFile("expired", time.Now().Add(-time.Hour))},
+	}
+	svc.SetHost(fixture.host)
+	for _, last := range []string{"", "expired", "missing"} {
+		svc.lastCredential = last
+		_, err := svc.withHostCredential(ExecutorRequest{})
+		var api *APIError
+		if !errors.As(err, &api) || api.Status != 401 || api.Kind != "auth_expired" {
+			t.Fatalf("credential error changed with cursor %q: %v", last, err)
+		}
+	}
+}
+
+func TestHostCredentialUsesCurrentFileSettings(t *testing.T) {
+	svc := hostModeService(t)
+	fixture := &hostCredentialFixture{
+		entries: []hostAuthEntry{{Index: "a", Provider: AuthProviderID, Path: "/fixture/a.json"}},
+		files:   map[string]string{},
+	}
+	svc.SetHost(fixture.host)
+	for _, enabled := range []bool{true, false} {
+		fixture.files["a"] = string(jsonBytes(map[string]any{
+			"type": "codex", "access_token": "fixture", "account_id": "fixture-account", "websockets": enabled,
+		}))
+		selected, err := svc.withHostCredential(ExecutorRequest{AuthAttributes: map[string]string{"websockets": fmt.Sprint(!enabled)}})
+		if err != nil || credentialWebsocketsEnabled(selected) != enabled {
+			t.Fatalf("current WS setting not applied: enabled=%t err=%v", enabled, err)
+		}
+	}
+	for _, data := range []map[string]any{
+		{"type": "codex", "access_token": "fixture", "account_id": "fixture-account", "disabled": true},
+		{"type": "claude", "access_token": "fixture", "account_id": "fixture-account"},
+	} {
+		fixture.files["a"] = string(jsonBytes(data))
+		if _, err := svc.withHostCredential(ExecutorRequest{}); err == nil {
+			t.Fatal("credential changed after listing was accepted")
+		}
+	}
+}
+
+func TestHostModeRequiresStaticHostPolicyAndRemovesManagement(t *testing.T) {
+	svc := NewService()
+	svc.cfg.CredentialSource = CredentialSourceHost
+	if _, err := svc.withHostCredential(ExecutorRequest{}); err == nil {
+		t.Fatal("missing host transport policy silently assumed direct networking")
+	}
+	for _, mode := range []string{CredentialSourceHost, CredentialSourceVirtual} {
+		cfg := defaultConfig()
+		cfg.CredentialSource = mode
+		if objectValue(registration(cfg)["capabilities"])["management_api"] == true {
+			t.Fatalf("management page still registered in %s mode", mode)
+		}
+	}
+	for _, method := range []string{"management.register", "management.handle"} {
+		if _, err := svc.Handle(method, []byte(`{}`)); err == nil {
+			t.Fatalf("removed management method %s still handled", method)
 		}
 	}
 }

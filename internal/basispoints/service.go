@@ -12,17 +12,19 @@ import (
 )
 
 type Service struct {
-	attachments attachmentCache
-	mu          sync.RWMutex
-	cfg         Config
-	host        HostCall
-	stopped     bool
-	streams     map[*runningStream]struct{}
-	streamWG    sync.WaitGroup
-	requests    map[string]*requestScope
-	authEditMu  sync.Mutex
-	authDir     string
-	authPage    string
+	attachments       attachmentCache
+	mu                sync.RWMutex
+	cfg               Config
+	host              HostCall
+	stopped           bool
+	streams           map[*runningStream]struct{}
+	streamWG          sync.WaitGroup
+	requests          map[string]*requestScope
+	hostProxyURL      string
+	hostReady         bool
+	credentialMu      sync.Mutex
+	lastCredential    string
+	credentialClients map[string]credentialHTTPClient
 }
 
 func NewService() *Service {
@@ -109,17 +111,7 @@ func (s *Service) Handle(method string, raw json.RawMessage) (any, error) {
 		if s.hostCredentialMode() {
 			return s.authParseHostMode(), nil
 		}
-		result, err := parseAuthRequest(request)
-		if err == nil && request.Host.AuthDir != "" {
-			s.mu.Lock()
-			s.authDir = filepath.Clean(request.Host.AuthDir)
-			s.mu.Unlock()
-		}
-		return result, err
-	case "management.register":
-		return s.registerSourceAuthManagement(raw)
-	case "management.handle":
-		return s.handleSourceAuthManagement(raw)
+		return parseAuthRequest(request)
 	case "model.route":
 		return s.routeModel(raw)
 	case "request.intercept_before":
@@ -134,7 +126,21 @@ func (s *Service) Handle(method string, raw json.RawMessage) (any, error) {
 		return map[string]any{"Status": "error", "Message": "Import an existing CPA codex OAuth credential"}, nil
 	case "auth.refresh":
 		return authRefresh(raw)
-	case "model.register", "model.static", "model.for_auth":
+	case "model.static":
+		var request struct {
+			Host *struct{ ProxyURL string }
+		}
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return nil, fail(400, "invalid_request", "invalid static model request")
+		}
+		if request.Host != nil {
+			s.mu.Lock()
+			s.hostProxyURL = request.Host.ProxyURL
+			s.hostReady = true
+			s.mu.Unlock()
+		}
+		return modelRegistration(s.config()), nil
+	case "model.register", "model.for_auth":
 		return modelRegistration(s.config()), nil
 	case "response.intercept_after":
 		return s.interceptModelCatalog(raw)
@@ -195,6 +201,7 @@ func (s *Service) executeResponse(request ExecutorRequest, body map[string]any, 
 		return nil, nil, nil, err
 	}
 	defer run.finish()
+	request.run = run
 	source, err := executorSource(request)
 	if err != nil {
 		return nil, nil, nil, err
@@ -301,7 +308,6 @@ func registration(cfg Config) map[string]any {
 			"response_interceptor":     true,
 			"request_interceptor":      true,
 			"request_lifecycle_plugin": true,
-			"management_api":           true,
 		},
 		"config": cfg,
 	}

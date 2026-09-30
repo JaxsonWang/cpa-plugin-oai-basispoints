@@ -88,16 +88,9 @@ func (s *Service) upstreamRequest(request ExecutorRequest, body map[string]any, 
 	if cfg.ResponsesURL == "" {
 		return upstreamResponse{}, fail(500, "invalid_config", "responses_url is empty")
 	}
-	payload := map[string]any{
-		"host_callback_id": request.HostCallbackID,
-		"method":           http.MethodPost,
-		"url":              cfg.ResponsesURL,
-		"headers":          authHeaders(c, stream),
-		"body":             jsonBytes(body),
-	}
-	var response upstreamResponse
-	if err := s.call("host.http.do", payload, &response); err != nil {
-		return upstreamResponse{}, fail(502, "upstream_transport", "Basis Points transport failed: "+safeError(err))
+	response, err := s.doHTTP(request, cfg.ResponsesURL, authHeaders(c, stream), jsonBytes(body))
+	if err != nil {
+		return upstreamResponse{}, transportError(err, "upstream_transport", "Basis Points transport failed: ")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return response, upstreamRequestError(response.StatusCode, response.Body, body, c)
@@ -107,18 +100,11 @@ func (s *Service) upstreamRequest(request ExecutorRequest, body map[string]any, 
 
 func (s *Service) upstreamStream(request ExecutorRequest, body map[string]any, c credential) (upstreamStream, error) {
 	cfg := s.config()
-	payload := map[string]any{
-		"host_callback_id": request.HostCallbackID,
-		"method":           http.MethodPost,
-		"url":              cfg.ResponsesURL,
-		"headers":          authHeaders(c, true),
-		"body":             jsonBytes(body),
+	stream, err := s.openHTTPStream(request, cfg.ResponsesURL, authHeaders(c, true), jsonBytes(body))
+	if err != nil {
+		return stream, transportError(err, "upstream_transport", "Basis Points stream transport failed: ")
 	}
-	var stream upstreamStream
-	if err := s.call("host.http.do_stream", payload, &stream); err != nil {
-		return stream, fail(502, "upstream_transport", "Basis Points stream transport failed: "+safeError(err))
-	}
-	if stream.StreamID == "" {
+	if stream.StreamID == "" && stream.local == nil {
 		return stream, fail(502, "upstream_transport", "host returned no Basis Points stream ID")
 	}
 	if stream.StatusCode < 200 || stream.StatusCode >= 300 {
@@ -141,19 +127,19 @@ func safeError(err error) string {
 
 func (s *Service) readUpstreamStream(stream upstreamStream) ([]byte, error) {
 	cfg := s.config()
-	if stream.StreamID == "" {
+	if stream.StreamID == "" && stream.local == nil {
 		return nil, fail(502, "upstream_transport", "upstream stream ID is empty")
 	}
-	defer func() { _ = s.call("host.http.stream_close", map[string]any{"stream_id": stream.StreamID}, nil) }()
+	defer s.closeHTTPStream(stream)
 	deadline := time.Now().Add(time.Duration(cfg.TimeoutSeconds) * time.Second)
 	var buffer bytes.Buffer
 	for {
 		if time.Now().After(deadline) {
 			return nil, timeoutError(cfg)
 		}
-		var chunk streamChunk
-		if err := s.call("host.http.stream_read", map[string]any{"stream_id": stream.StreamID}, &chunk); err != nil {
-			return nil, fail(502, "upstream_transport", "Basis Points stream read failed: "+safeError(err))
+		chunk, err := s.readHTTPStream(stream)
+		if err != nil {
+			return nil, transportError(err, "upstream_transport", "Basis Points stream read failed: ")
 		}
 		if chunk.Error != "" {
 			return nil, fail(502, "upstream_transport", "Basis Points stream interrupted: "+safeError(errors.New(chunk.Error)))

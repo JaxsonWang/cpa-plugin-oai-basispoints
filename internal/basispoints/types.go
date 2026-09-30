@@ -88,6 +88,9 @@ type ExecutorRequest struct {
 	AuthAttributes  map[string]string `json:"AuthAttributes"`
 	StreamID        string            `json:"stream_id,omitempty"`
 	HostCallbackID  string            `json:"host_callback_id,omitempty"`
+	// 仅由插件选择宿主凭据后设置，不是宿主 ABI 或客户端可传入的字段。
+	credentialProxy *string
+	run             *runningStream
 }
 
 type ExecutorResponse struct {
@@ -111,6 +114,7 @@ type upstreamStream struct {
 	StatusCode int         `json:"status_code"`
 	Headers    http.Header `json:"headers"`
 	StreamID   string      `json:"stream_id"`
+	local      *credentialHTTPStream
 }
 
 type streamChunk struct {

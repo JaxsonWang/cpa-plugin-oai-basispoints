@@ -16,7 +16,6 @@ type authParseRequest struct {
 	FileName string `json:"FileName"`
 	RawJSON  []byte `json:"RawJSON"`
 	Host     struct {
-		AuthDir  string `json:"AuthDir"`
 		ProxyURL string `json:"ProxyURL"`
 	} `json:"Host"`
 }

@@ -36,7 +36,7 @@ func (s *Service) interceptUpstreamRequest(raw json.RawMessage) (any, error) {
 	if !enabled {
 		return map[string]any{}, nil
 	}
-	if cfg.UpstreamTransport == "http" {
+	if cfg.UpstreamTransport == "http" && cfg.CredentialSource != CredentialSourceHost {
 		return map[string]any{"ClearHeaders": []string{requestLifecycleHeader}}, nil
 	}
 	if request.RequestID == "" {
@@ -79,7 +79,9 @@ func (s *Service) startRun(request ExecutorRequest) (*runningStream, error) {
 		return nil, fail(503, "plugin_stopped", "oai-basispoints is shut down")
 	}
 	parent := context.Background()
-	if id := request.Headers.Get(requestLifecycleHeader); id != "" {
+	if request.run != nil {
+		parent = request.run.ctx
+	} else if id := request.Headers.Get(requestLifecycleHeader); id != "" {
 		scope := s.requests[id]
 		if scope == nil {
 			return nil, fail(499, "client_disconnected", "request already completed")

@@ -30,7 +30,7 @@ plugins:
 3. CPA 的 `auth-dir` 中已有的 `type: codex` OAuth 文件会被插件识别；插件只在内存中读取 token，不生成另一份 token 文件。
 4. 客户端使用 Responses 协议调用 `gpt-6-astra-basispoints`。模型目录声明图像输入，以及 `low`、`medium`、`high`、`xhigh`、`max`、`ultra` 思考等级；`max` 映射为 `xhigh`，`ultra` 原样传递，未指定时默认 `medium`。
 
-插件的 `auth.parse` 会接管 CPA 中 `type: codex` 的 OAuth 文件，并为同一个文件展开两条内存认证：一条保留原生 `codex`，另一条是 `oai-basispoints` 虚拟认证。这样现有 Codex 模型继续使用 CPA 原生执行器，`gpt-6-astra-basispoints` 则使用本插件；解析和执行请求不会生成或改写 OAuth 文件，只有用户通过下述源认证入口保存时才修改原文件的 `websockets` 字段。原生 Codex 记录保留源 OAuth 元数据，供原生执行器读取访问令牌和刷新令牌。注意：当前 CPA 会把这两条记录都标记为虚拟认证，不持久化原生记录的刷新结果；Basis Points 记录也不会自动同步原生记录在内存中刷新的 JWT。源 JWT 过期时，需要先通过 CPA 更新或重新导入源 OAuth 凭据，再重新加载，单纯重载过期文件无效。
+默认 virtual 模式的 `auth.parse` 会接管 CPA 中 `type: codex` 的 OAuth 文件，并为同一个文件展开两条内存认证：一条保留原生 `codex`，另一条是 `oai-basispoints` 虚拟认证。这样现有 Codex 模型继续使用 CPA 原生执行器，`gpt-6-astra-basispoints` 则使用本插件；插件只读 OAuth 文件，不生成或改写凭据。原生 Codex 记录保留源 OAuth 元数据，供原生执行器读取访问令牌和刷新令牌。注意：当前 CPA 会把这两条记录都标记为虚拟认证，不持久化原生记录的刷新结果；Basis Points 记录也不会自动同步原生记录在内存中刷新的 JWT。源 JWT 过期时，需要先通过 CPA 更新或重新导入源 OAuth 凭据，再重新加载，单纯重载过期文件无效。长期运行建议使用下述 host 模式。
 
 ## 凭据来源与刷新持久化
 
@@ -38,14 +38,17 @@ plugins:
 
 - 插件不再接管 `type: codex` 文件解析，CPA 按原生 Codex 认证加载、刷新，并把轮换后的 `refresh_token` 写回源文件；重启后读取的是最新凭据。
 - 插件改为声明模型路由器，只把配置中的别名模型交给本执行器；原生 Codex 模型的调度、冷却与重试不受影响。
-- 每次执行通过 `host.auth.list` / `host.auth.get` 读取宿主当前凭据，按稳定顺序轮询未禁用、非运行时的 Codex 认证；access_token 已过期的凭据跳过，均不可用时返回 503 `auth_unavailable`。原生通道的过载冷却不作为跳过条件。
-- 此模式不声明认证提供方，CPA 不再向插件提供认证目录，源认证 WS 编辑页面不可用；WS 开关仍读取源文件的 `websockets` 字段，可直接编辑源文件或使用 CPA 管理接口修改。
+- 每次执行通过 `host.auth.list` / `host.auth.get` 读取宿主当前凭据，轮询未禁用、非运行时且 token 未过期的 Codex 认证。不缓存 token；过期文件不挤占有效账号的轮询份额。没有候选时返回 503 `auth_unavailable`；全部读取或校验失败时，按文件名稳定顺序返回实际失败原因，例如 401 `auth_expired`，不会随轮询位置随机改变错误分类。
+- 不共用原生 Codex 通道的过载冷却，也不在一次已发送的生成失败后自动换号重放；401/403/407/429 保留真实状态。此模式不经过 CPA 原生认证调度器，原生账号级冷却、优先级及用量归属不能视为已自动继承。
+- `model.static` 提供宿主全局代理；凭据自身 `proxy_url` 优先，其次为宿主 `proxy-url`，都未配置才使用环境代理。`direct` / `none` 明确禁用代理。HTTP、SSE、图片上传和 WS 使用同一份有效代理策略；错误或不可达的代理不允许绕过直连。
+- 未修改的 CPA `host.http.*` ABI 不能给 self 路由重新绑定账号代理，因此 host 模式的 HTTP/SSE/附件由插件绑定本次凭据的 HTTP 客户端发送，并保留取消、超时、停用及大小限制；不是失败后的备用通道。连接池按账号与有效代理隔离，不缓存 OAuth token。该路径不经过宿主 `host.http.*` 请求日志捕获。
+
+插件不再提供独立设置页面或源认证编辑接口。请直接在 **CPA 凭证设置**中管理 `websockets` 等字段；`upstream_transport: auto` 读取当前凭据的开关，`http` 则始终禁用 WS。host 模式下一次请求读取已保存的新开关，无需维护第二份设置。
 
 ## 构建
 
 ```bash
 make test
-node --test internal/basispoints/source_auth_page.test.mjs
 make build
 ```
 

@@ -33,6 +33,7 @@ plugins:
         gpt-5.6-sol-basispoints: gpt-5.6-sol
 
       # auto：仅当前 CPA 凭据的 websockets 开关开启时优先 WS；每轮握手一次。
+      # 在 CPA 原生凭证设置中开启或关闭 websockets；插件不提供独立设置页。
       # 多账号分别按各自开关尝试，不限制同时启用的账号数量；能否返回 101 由上游决定。
       # 凭据开关关闭、缺失或无效时直接走 HTTP/SSE，不先握手，也不改写凭据。
       # 开启后的握手失败仍按下方规则回退原 HTTP/SSE。
@@ -65,7 +66,8 @@ plugins:
       #   Basis Points 记录也不跟随原生刷新，access_token 到期后需重新导入源凭据。
       # host：插件不接管 Codex 文件，由 CPA 原生加载、刷新并写回源文件；执行 Basis Points
       #   请求时通过 host.auth.get 读取宿主当前凭据，按顺序轮询未禁用的 Codex 认证。
-      #   别名模型由插件路由器直接交给本执行器；源认证 WS 编辑入口在此模式下不可用。
+      #   别名模型由插件路由器直接交给本执行器，WS 和代理沿用 CPA 凭据及宿主设置。
+      #   不使用原生 Codex 通道的冷却，也不在生成失败后自动换号重放。
       credential_source: virtual
 
       # 非敏感配置的持久化目录，默认值为 plugins/oai-basispoints-data。

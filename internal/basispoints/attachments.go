@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"mime/multipart"
@@ -213,14 +214,12 @@ func (s *Service) uploadImage(request ExecutorRequest, endpoint string, image in
 	}
 	headers := authHeaders(c, false)
 	headers.Set("Content-Type", writer.FormDataContentType())
-	var response upstreamResponse
-	if err := s.call("host.http.do", map[string]any{
-		"host_callback_id": request.HostCallbackID,
-		"method":           http.MethodPost,
-		"url":              endpoint,
-		"headers":          headers,
-		"body":             body.Bytes(),
-	}, &response); err != nil {
+	response, err := s.doHTTP(request, endpoint, headers, body.Bytes())
+	if err != nil {
+		var apiError *APIError
+		if errors.As(err, &apiError) {
+			return "", apiError
+		}
 		return "", fail(502, "attachment_transport", "Basis Points attachment upload transport failed: "+attachmentErrorMessage([]byte(err.Error()), c, image))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
