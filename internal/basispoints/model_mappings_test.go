@@ -15,6 +15,7 @@ import (
 func mappedConfig(count int) Config {
 	cfg := defaultConfig()
 	cfg.UpstreamTransport = "http"
+	cfg.CredentialSource = CredentialSourceVirtual
 	cfg.DataDir = ""
 	cfg.Models = nil
 	cfg.ModelMappings = make(map[string]string, count)

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -43,8 +45,8 @@ func (f *hostCredentialFixture) host(method string, payload any, out any) error 
 
 func hostModeService(t *testing.T) *Service {
 	t.Helper()
-	svc := newHTTPTestService()
-	if _, err := svc.Handle("plugin.register", jsonBytes(map[string]any{"config_yaml": []byte("credential_source: host\ndata_dir: \"\"\nupstream_transport: http\n")})); err != nil {
+	svc := NewService()
+	if _, err := svc.Handle("plugin.register", jsonBytes(map[string]any{"config_yaml": []byte("data_dir: \"\"\nupstream_transport: http\n")})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.Handle("model.static", jsonBytes(map[string]any{"Host": map[string]any{"ProxyURL": ""}})); err != nil {
@@ -75,9 +77,9 @@ func TestHostCredentialModeLeavesCodexFilesToHost(t *testing.T) {
 	if capabilities["auth_provider"] != false || capabilities["model_router"] != true {
 		t.Fatalf("host mode capabilities = %#v", capabilities)
 	}
-	virtual := objectValue(registration(defaultConfig())["capabilities"])
+	virtual := objectValue(registration(newVirtualTestService().config())["capabilities"])
 	if virtual["auth_provider"] != true || virtual["model_router"] != false {
-		t.Fatalf("default mode must keep the existing auth provider: %#v", virtual)
+		t.Fatalf("explicit virtual mode must keep the auth provider: %#v", virtual)
 	}
 }
 
@@ -93,9 +95,9 @@ func TestHostCredentialModeRoutesOnlyConfiguredAliases(t *testing.T) {
 			t.Fatalf("route %s = %#v", model, route)
 		}
 	}
-	result, err := NewService().Handle("model.route", jsonBytes(map[string]any{"RequestedModel": DefaultModelID}))
+	result, err := newVirtualTestService().Handle("model.route", jsonBytes(map[string]any{"RequestedModel": DefaultModelID}))
 	if err != nil || objectValue(result)["Handled"] != false {
-		t.Fatalf("default mode must not route: %#v %v", result, err)
+		t.Fatalf("explicit virtual mode must not route: %#v %v", result, err)
 	}
 }
 
@@ -181,12 +183,67 @@ func TestHostCredentialModeSkipsExpiredAndReportsMissing(t *testing.T) {
 }
 
 func TestCredentialSourceValidation(t *testing.T) {
-	for value, valid := range map[string]bool{"": true, "virtual": true, " HOST ": true, "file": false} {
+	if cfg := NewService().config(); cfg.CredentialSource != CredentialSourceHost {
+		t.Fatalf("new service credential source = %q, want host", cfg.CredentialSource)
+	}
+	for value, want := range map[string]string{"": "host", " ": "host", "virtual": "virtual", " VIRTUAL ": "virtual", "host": "host", " HOST ": "host", "file": ""} {
 		cfg := defaultConfig()
 		cfg.CredentialSource = value
-		if err := cfg.normalize(); (err == nil) != valid {
+		if err := cfg.normalize(); (err == nil) != (want != "") {
 			t.Fatalf("credential_source %q validation = %v", value, err)
 		}
+		if want != "" && cfg.CredentialSource != want {
+			t.Fatalf("credential_source %q normalized = %q, want %q", value, cfg.CredentialSource, want)
+		}
+	}
+}
+
+func TestCredentialSourceConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, persisted, want string
+	}{
+		{name: "omitted", want: "host"},
+		{name: "empty", yaml: "credential_source: ''\n", want: "host"},
+		{name: "null", yaml: "credential_source: null\n", want: "host"},
+		{name: "explicit_host", yaml: "credential_source: host\n", want: "host"},
+		{name: "explicit_virtual", yaml: "credential_source: virtual\n", want: "virtual"},
+		{name: "older_settings_without_source", persisted: `{}`, want: "host"},
+		{name: "empty_persisted_source", persisted: `{"credential_source":""}`, want: "host"},
+		{name: "persisted_virtual", persisted: `{"credential_source":"virtual"}`, want: "virtual"},
+		{name: "persisted_virtual_over_yaml_host", yaml: "credential_source: host\n", persisted: `{"credential_source":"virtual"}`, want: "virtual"},
+		{name: "persisted_host_over_yaml_virtual", yaml: "credential_source: virtual\n", persisted: `{"credential_source":"host"}`, want: "host"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.persisted != "" {
+				if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(tc.persisted), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			svc := NewService()
+			raw := jsonBytes(map[string]any{"config_yaml": []byte(fmt.Sprintf("data_dir: %q\n%s", dir, tc.yaml))})
+			result, err := svc.Handle("plugin.register", raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			caps := objectValue(objectValue(result)["capabilities"])
+			if svc.config().CredentialSource != tc.want || caps["model_router"] != (tc.want == "host") || caps["auth_provider"] != (tc.want == "virtual") {
+				t.Fatalf("credential source = %q, capabilities = %v, want %s", svc.config().CredentialSource, caps, tc.want)
+			}
+			restored := NewService()
+			if err := restored.configure(jsonBytes(map[string]any{"config_yaml": []byte(fmt.Sprintf("data_dir: %q\n", dir))})); err != nil {
+				t.Fatal(err)
+			}
+			if restored.config().CredentialSource != tc.want {
+				t.Fatalf("restored credential source = %q, want %s", restored.config().CredentialSource, tc.want)
+			}
+			if _, err := svc.Handle("plugin.reconfigure", jsonBytes(map[string]any{"config_yaml": []byte("data_dir: ''\n")})); err != nil {
+				t.Fatal(err)
+			}
+			if svc.config().CredentialSource != "host" {
+				t.Fatal("reconfigure without an override must restore the host default")
+			}
+		})
 	}
 }
 

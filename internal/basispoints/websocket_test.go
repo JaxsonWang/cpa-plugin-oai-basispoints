@@ -51,7 +51,7 @@ func TestWebSocketFirstAndHandshakeFallback(t *testing.T) {
 					})
 				}))
 				defer server.Close()
-				svc := NewService()
+				svc := newVirtualTestService()
 				svc.cfg.ResponsesURL = server.URL + "/responses"
 				closed := make(chan struct{}, 1)
 				var frames [][]byte

@@ -268,6 +268,7 @@ func (s *Service) status() map[string]any {
 		"models":                       cfg.Models,
 		"model_mappings":               cfg.ModelMappings,
 		"upstream_transport":           cfg.UpstreamTransport,
+		"stream_tool_mode":             cfg.StreamToolMode,
 		"ws_handshake_timeout_seconds": cfg.WSHandshakeTimeoutSeconds,
 		"stopped":                      stopped,
 		"reasoning_efforts":            []string{"low", "medium", "high", "xhigh", "ultra"},
@@ -285,6 +286,7 @@ func registration(cfg Config) map[string]any {
 			"Description":      "CPA Responses adapter for bps.openai.com with safe client-tool relay",
 			"ConfigFields": []map[string]any{
 				{"Name": "upstream_transport", "Type": "string", "Description": "auto：仅凭据 websockets 已开启时优先 WS，握手失败可回退 HTTP/SSE；http：仅使用 HTTP/SSE。"},
+				{"Name": "stream_tool_mode", "Type": "string", "Description": "incremental（默认）：实时交付正文和摘要；buffered：本轮有可调用工具时等待整轮校验，可在交付前重生成一次，但首字延迟增大。"},
 				{"Name": "ws_handshake_timeout_seconds", "Type": "integer", "Description": "WS 单次握手上限，默认 5 秒；每轮生成只尝试一次。"},
 				{"Name": "responses_url", "Type": "string", "Description": "Basis Points Responses endpoint."},
 				{"Name": "upstream_model", "Type": "string", "Description": "未单独配置 model_mappings 的别名使用的上游模型。"},
@@ -294,7 +296,7 @@ func registration(cfg Config) map[string]any {
 				{"Name": "max_response_bytes", "Type": "integer", "Description": "Maximum upstream response size."},
 				{"Name": "auth_mode", "Type": "string", "Description": "Basis Points authentication mode; normally chatgpt."},
 				{"Name": "tools_version_id", "Type": "string", "Description": "Optional authoritative Basis Points tools catalog version."},
-				{"Name": "credential_source", "Type": "string", "Description": "virtual：插件展开虚拟认证（默认）；host：Codex 文件交由 CPA 原生刷新和持久化，执行时读取宿主最新凭据。"},
+				{"Name": "credential_source", "Type": "string", "Description": "host（默认）：Codex 文件交由 CPA 原生刷新和持久化，执行时读取宿主最新凭据；virtual：显式启用插件虚拟认证。"},
 			},
 		},
 		"capabilities": map[string]any{

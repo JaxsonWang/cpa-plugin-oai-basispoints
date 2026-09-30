@@ -38,7 +38,7 @@ func TestWebSocketRequiresEnabledCredential(t *testing.T) {
 						http.Error(w, "fixture upgrade unsupported", http.StatusNotFound)
 					}))
 					defer server.Close()
-					svc := NewService()
+					svc := newVirtualTestService()
 					svc.cfg.ResponsesURL, svc.cfg.UpstreamTransport = server.URL, mode
 					capture := &websocketCapture{closed: make(chan struct{}, 1)}
 					svc.SetHost(capture.host)

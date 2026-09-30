@@ -170,7 +170,6 @@ plugins:
     oai-basispoints:
       enabled: true
       data_dir: ""
-      credential_source: host
       upstream_transport: auto
       responses_url: {upstream_url}/responses
 """)

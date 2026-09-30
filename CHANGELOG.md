@@ -1,13 +1,18 @@
 # 更新日志
 
-## 未发布
+## 未发布 — 2026-09-30（UTC+8，源码修复）
 
 - 优化 host 模式：从 `model.static` 接收宿主代理，统一 HTTP/SSE、WS 和图片上传的代理优先级；配置错误或不可达时不绕过代理。按账号复用连接并保留请求取消和停用清理。
 - 修复无效凭据导致的轮询偏斜，稳定全部失败时的错误分类，仍保留真实认证错误；每次请求读取当前 token 与 WS 开关。
 - 删除插件独立设置页面及其管理接口，WS 等凭据设置统一使用 CPA 原生管理页面。
-- 新增 `credential_source: host`（默认仍为 `virtual`，认证解析行为不变）。未修改的 CPA 会把插件展开的多条认证标记为 `plugin_virtual` 并跳过持久化，导致原生记录刷新后的 `refresh_token` 不写回源文件，重启后加载已轮换失效的旧值；Basis Points 记录也不随原生刷新，access_token 到期后请求失败。
+- `credential_source` 默认改为 `host`，未配置或留空时不再展开虚拟认证；显式 `virtual` 仍保留，不覆盖 YAML 或持久化设置中的选择。未修改的 CPA 会把插件展开的多条认证标记为 `plugin_virtual` 并跳过持久化，导致原生记录刷新后的 `refresh_token` 不写回源文件，重启后加载已轮换失效的旧值；Basis Points 记录也不随原生刷新，access_token 到期后请求失败。
 - host 模式不接管 Codex 文件解析，由 CPA 原生刷新和持久化；插件改用模型路由器承接别名模型，执行时经 `host.auth.list` / `host.auth.get` 读取宿主当前凭据，不修改 CPA 主程序。
-- 使用未修改的 CPA v7.3.7 隔离验证：插件加载后只产生 1 条原生认证；管理接口强制刷新后源文件 access/refresh token 均更新，下一次 Basis Points 请求使用新 token；容器重启后原生及 Basis Points 请求、再次刷新均成功。文本、图片、function 工具、SSE 流式通过。
+- PR #20 作者报告使用未修改的 CPA v7.3.7 完成真实凭据刷新及容器重启验证；本仓库独立验收使用未修改 CPA v7.3.19 和合成凭据，验证持久化后的新 token 读取与代理约束，不把作者报告当作本轮独立实测。
+- 复现 #21：正文或推理摘要已经交付时，后续工具 JSON 校验失败无法使用交付前重生成；未修改 CPA 上实际表现为 HTTP 200 流内的 422 `invalid_tool_call`，不是已发 HTTP 响应改成 422。
+- 新增显式 `stream_tool_mode: buffered`：当前回合有可调用工具时，正文、摘要和工具等待整轮校验，复用既有最多一次重生成；失败尝试不交付、不缓存半批工具，两次失败仍真实返回 422。不修补 JSON、不新增重试次数、不重放已交付内容。
+- 默认仍为 `incremental`，保留现有正文/摘要实时输出；启用缓冲会增加所有工具可用回合的首字延迟，即使最终只返回正文。无工具和 `tool_choice: none` 继续实时交付，不改变上游失败分类、截断、取消、超时和大小限制。
+- #21 初次本地验测的命令、范围及限制见 `docs/validation/issue-21.md`，既有候选的线上工具专项见 `docs/validation/issue-21-live-20260930.md`；未覆盖报告者原始 Windows/Codex Desktop 会话，不保证模型永不生成非法参数。
+- 默认 host 的本次交付源码通过 932 项 Go 测试及子测试（race）、10 项 host 原生 ABI 与 8 项缓冲原生联调；Linux AMD64 动态库交叉构建通过。证据及部署限制见 `docs/validation/host-default-20260930.md`；不发布新版本。
 
 ## v0.2.8 — 2026-09-29（UTC+8）
 

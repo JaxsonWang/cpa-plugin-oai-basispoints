@@ -125,6 +125,7 @@ type streamChunk struct {
 
 type Config struct {
 	UpstreamTransport         string            `yaml:"upstream_transport" json:"upstream_transport"`
+	StreamToolMode            string            `yaml:"stream_tool_mode" json:"stream_tool_mode"`
 	WSHandshakeTimeoutSeconds int               `yaml:"ws_handshake_timeout_seconds" json:"ws_handshake_timeout_seconds"`
 	DataDir                   string            `yaml:"data_dir" json:"data_dir"`
 	ResponsesURL              string            `yaml:"responses_url" json:"responses_url"`
@@ -141,6 +142,7 @@ type Config struct {
 func defaultConfig() Config {
 	return Config{
 		UpstreamTransport:         "auto",
+		StreamToolMode:            "incremental",
 		WSHandshakeTimeoutSeconds: 5,
 		DataDir:                   "plugins/oai-basispoints-data",
 		ResponsesURL:              DefaultResponsesURL,
@@ -149,7 +151,7 @@ func defaultConfig() Config {
 		TimeoutSeconds:            300,
 		MaxResponseBytes:          64 << 20,
 		AuthMode:                  "chatgpt",
-		CredentialSource:          CredentialSourceVirtual,
+		CredentialSource:          CredentialSourceHost,
 	}
 }
 
@@ -160,6 +162,10 @@ func (c *Config) normalize() error {
 	c.UpstreamTransport = strings.ToLower(strings.TrimSpace(c.UpstreamTransport))
 	if c.UpstreamTransport != "auto" && c.UpstreamTransport != "http" {
 		return fail(400, "invalid_config", "upstream_transport must be auto or http")
+	}
+	c.StreamToolMode = strings.ToLower(strings.TrimSpace(c.StreamToolMode))
+	if c.StreamToolMode != "incremental" && c.StreamToolMode != "buffered" {
+		return fail(400, "invalid_config", "stream_tool_mode must be incremental or buffered")
 	}
 	if c.WSHandshakeTimeoutSeconds < 1 || c.WSHandshakeTimeoutSeconds > 30 {
 		return fail(400, "invalid_config", "ws_handshake_timeout_seconds must be between 1 and 30")
@@ -178,7 +184,7 @@ func (c *Config) normalize() error {
 	}
 	c.CredentialSource = strings.ToLower(strings.TrimSpace(c.CredentialSource))
 	if c.CredentialSource == "" {
-		c.CredentialSource = CredentialSourceVirtual
+		c.CredentialSource = CredentialSourceHost
 	}
 	if c.CredentialSource != CredentialSourceVirtual && c.CredentialSource != CredentialSourceHost {
 		return fail(400, "invalid_config", "credential_source must be virtual or host")

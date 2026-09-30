@@ -145,7 +145,9 @@ func (s *Service) readStreamingResponse(request ExecutorRequest, body map[string
 	if err != nil {
 		return nil, err
 	}
+	bufferToolResponse := s.config().StreamToolMode == "buffered" && len(callableClientToolSpecs(source)) > 0
 	for attempt := 0; attempt < 2; attempt++ {
+		delivery.bufferUntilValidated = bufferToolResponse
 		response, err := s.readStreamAttempt(request, body, c, run, delivery)
 		if err != nil {
 			return nil, err
@@ -161,7 +163,7 @@ func (s *Service) readStreamingResponse(request ExecutorRequest, body map[string
 		if delivery.committed || attempt != 0 || response["status"] == "incomplete" || !errors.As(err, &apiError) || apiError.Kind != "invalid_tool_call" {
 			return nil, err
 		}
-		// 没有提交任何客户端数据的工具请求仍保留原有一次重生成；已经输出则绝不重跑。
+		// 缓冲模式丢弃的是整轮尚未交付内容；已提交的增量模式仍绝不重跑。
 		retry := cloneObject(body)
 		items, _ := body["input"].([]any)
 		retry["input"] = appendBeforeCompaction(append([]any{}, items...), []any{messageItem("developer", transportRetryHint+" Diagnostic: "+apiError.Message)})

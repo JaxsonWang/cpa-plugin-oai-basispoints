@@ -66,7 +66,7 @@ func TestWebSocketCredentialsRemainIndependent(t *testing.T) {
 			defer server.Close()
 			svc := NewService()
 			// 旧配置文件里的遗留字段不能继续强制账号走 HTTP；不增加兼容分流逻辑。
-			config := fmt.Sprintf("data_dir: \"\"\nresponses_url: %s\nhttp_only_auth_ids: [bp-a, bp-b]\n", server.URL)
+			config := fmt.Sprintf("data_dir: \"\"\ncredential_source: virtual\nresponses_url: %s\nhttp_only_auth_ids: [bp-a, bp-b]\n", server.URL)
 			if err := svc.configure(jsonBytes(map[string]any{"config_yaml": []byte(config)})); err != nil {
 				t.Fatal(err)
 			}

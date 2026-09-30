@@ -178,7 +178,7 @@ func TestAgentMessageRoutingWebSocketWireEncoding(t *testing.T) {
 					}
 				}))
 				defer server.Close()
-				svc := NewService()
+				svc := newVirtualTestService()
 				svc.cfg.ResponsesURL = server.URL + "/responses"
 				closed := make(chan struct{}, 1)
 				svc.SetHost(func(method string, payload any, out any) error {
