@@ -93,6 +93,8 @@ func (s *Service) tryWebSocket(request ExecutorRequest, body map[string]any, c c
 	payload["type"] = "response.create"
 	delete(payload, "stream")
 	delete(payload, "background")
+	started := time.Now()
+	progress := websocketProgress{started: started, lastEventAt: started, lastEvent: "none"}
 	// 发送调用可能已经部分到达上游；从此处起无论返回什么错误都不重放。
 	if err := conn.WriteMessage(websocket.TextMessage, jsonBytes(payload)); err != nil {
 		if canceled := run.contextError(); canceled != nil {
@@ -118,13 +120,15 @@ func (s *Service) tryWebSocket(request ExecutorRequest, body map[string]any, c c
 			if errors.As(readErr, &timeout) && timeout.Timeout() {
 				return nil, true, timeoutError(cfg)
 			}
-			message := "Basis Points WebSocket closed before a terminal response; not replayed over HTTP"
-			var closed *websocket.CloseError
-			if errors.As(readErr, &closed) {
-				// 不回显上游关闭原因正文，只暴露标准关闭码供定位断流。
-				message += fmt.Sprintf(" (close_code=%d)", closed.Code)
-			}
-			return nil, true, fail(502, "upstream_ws_interrupted", message)
+			interrupted := progress.interrupted(readErr, delivery)
+			// self 路由不经过原生认证错误日志；用既有 ABI 记录脱敏诊断。
+			// 日志回调失败也不能覆盖原始断流或使请求变成成功。
+			_ = s.call("host.log", map[string]any{
+				"host_callback_id": request.HostCallbackID,
+				"level":            "warn",
+				"message":          interrupted.Error(),
+			}, nil)
+			return nil, true, interrupted
 		}
 		if kind != websocket.TextMessage {
 			return nil, true, fail(502, "invalid_upstream_response", "Basis Points WebSocket returned a non-text event")
@@ -134,6 +138,7 @@ func (s *Service) tryWebSocket(request ExecutorRequest, body map[string]any, c c
 			return nil, true, fail(502, "invalid_upstream_response", "Basis Points WebSocket returned invalid event JSON")
 		}
 		name := stringValue(event["type"])
+		progress.record(name, len(data))
 		var frame strings.Builder
 		writeSSE(&frame, name, event)
 		if wire.Len()+frame.Len() > cfg.MaxResponseBytes {
