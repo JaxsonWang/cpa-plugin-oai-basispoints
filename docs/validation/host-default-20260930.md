@@ -39,11 +39,17 @@ CGO_ENABLED=1 GOOS=linux GOARCH=amd64 GOAMD64=v1 \
   -o oai-basispoints.so ./cmd/basispoints
 ```
 
-- SHA256：`ba57eb650db0ab524c66276443b3e7a1e1c164b65baa9b598501675395bf605f`。
+- 最终含中文配置说明候选的 SHA256：`5e4c3d25acb2592460f0b3647e4a3760a910b73c2753e69e2a7a32cf062c3b05`。
 - 格式：ELF64、little-endian、AMD64、共享库；导出原生插件入口，无可执行栈、RPATH、RUNPATH 或 TEXTREL。
 - 版本号仍为 `0.2.8`，这是本地候选，不是新增 GitHub Release。
 
 证据目录：`build/host-default-20260930-YCX5uD/`。`delivery-source/` 是精确验测快照，`delivery-tests.jsonl`、`delivery-native-acceptance.txt`、`issue21-host-default.jsonl` 分别记录全量测试与两组原生验收。
+
+## 配置说明简体中文补充
+
+随后根据配置面板截图，将超时、响应体上限、认证模式、工具目录版本及接口地址的说明改为简体中文，插件简介一并统一；不改字段名、配置值或执行逻辑。注册元数据共 13 项说明（插件简介及 12 个字段）均含中文，不再保留整句英文解释。
+
+此文案补充以 `localized-source/` 留存，重新执行凭据/配置定向测试及 10 项原版 CPA 原生验收，全部通过，并重新构建 macOS ARM64 与 Linux AMD64 动态库。`localized-native-acceptance.txt` 留存结果。932 项全量回归和 8 项缓冲验收对应补充文案前的同一执行逻辑；中文文案没有在 NAS 管理页面做部署后的视觉验收。
 
 ## 既有部署的只读烟测
 
