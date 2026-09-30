@@ -48,7 +48,7 @@ func (s *Service) tryWebSocket(request ExecutorRequest, body map[string]any, c c
 		}
 		return conn, err
 	}
-	headers := authHeaders(c, false)
+	headers := responseHeaders(c, false)
 	headers.Del("Content-Type")
 	conn, handshake, dialErr := dialer.DialContext(run.ctx, target.String(), headers)
 	if dialErr != nil {

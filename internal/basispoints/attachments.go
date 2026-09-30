@@ -212,7 +212,7 @@ func (s *Service) uploadImage(request ExecutorRequest, endpoint string, image in
 	if err := writer.Close(); err != nil {
 		return "", fail(500, "attachment_encoding", "cannot finish image attachment")
 	}
-	headers := authHeaders(c, false)
+	headers := responseHeaders(c, false)
 	headers.Set("Content-Type", writer.FormDataContentType())
 	response, err := s.doHTTP(request, endpoint, headers, body.Bytes())
 	if err != nil {
@@ -235,11 +235,18 @@ func (s *Service) uploadImage(request ExecutorRequest, endpoint string, image in
 }
 
 func attachmentErrorMessage(raw []byte, c credential, image inlineImage) string {
-	message := string(raw)
-	for _, secret := range []string{c.AccessToken, c.AccountID, c.Email, base64.StdEncoding.EncodeToString(image.data), string(image.data)} {
+	// Redact long credentials and image data before truncating the raw body, then redact
+	// the decoded message again for JSON-escaped dynamic headers and image data.
+	message := redactAttachmentSecrets(c.redactMessage(string(raw)), image)
+	message = c.redactMessage(errorMessage([]byte(message)))
+	return redactTokenMessage(redactAttachmentSecrets(message, image))
+}
+
+func redactAttachmentSecrets(message string, image inlineImage) string {
+	for _, secret := range []string{base64.StdEncoding.EncodeToString(image.data), string(image.data)} {
 		if secret != "" {
 			message = strings.ReplaceAll(message, secret, "[REDACTED]")
 		}
 	}
-	return redactTokenMessage(errorMessage([]byte(message)))
+	return message
 }

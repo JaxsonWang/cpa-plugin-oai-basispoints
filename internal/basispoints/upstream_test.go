@@ -2,6 +2,7 @@ package basispoints
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -66,6 +67,24 @@ func TestUpstreamDiagnosticRedactsCredentialsAndOmitsImageData(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "input_images=1") || !strings.Contains(err.Error(), "reasoning_effort=xhigh") {
 		t.Fatal("diagnostic missing safe request summary")
+	}
+}
+
+func TestUpstreamDiagnosticRedactsEscapedCapturedHeadersAfterJSONDecode(t *testing.T) {
+	userAgent := `Mozilla/5.0 "private-user-agent"`
+	c := credential{
+		AccountID:     "test-secret-account",
+		AccountUserID: "private-user-id",
+		CapturedHeaders: http.Header{
+			"User-Agent": {userAgent},
+		},
+	}
+	raw := jsonBytes(map[string]any{
+		"error": map[string]any{"message": userAgent + " " + c.AccountUserID},
+	})
+	err := upstreamRequestError(403, raw, map[string]any{}, c)
+	if strings.Contains(err.Error(), "private-user-agent") || strings.Contains(err.Error(), c.AccountUserID) {
+		t.Fatalf("escaped captured header leaked after decoding: %v", err)
 	}
 }
 

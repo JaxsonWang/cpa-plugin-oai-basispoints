@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 )
@@ -48,47 +47,12 @@ func (s *Service) prepareRequest(request ExecutorRequest) (map[string]any, crede
 	return prepared, c, nil
 }
 
-func authHeaders(c credential, stream bool) http.Header {
-	accept := "application/json"
-	if stream {
-		accept = "text/event-stream"
-	}
-	// These headers match the Excel/Basis Points client profile. The access
-	// token itself is never logged by this plugin.
-	return http.Header{
-		"Authorization":           []string{"Bearer " + c.AccessToken},
-		"ChatGPT-Account-ID":      []string{c.AccountID},
-		"X-OpenAI-Account-ID":     []string{c.AccountID},
-		"X-Basispoints-Auth-Mode": []string{c.AuthMode},
-		"Content-Type":            []string{"application/json"},
-		"Accept":                  []string{accept},
-		"Accept-Encoding":         []string{"identity"},
-		"Origin":                  []string{"https://bps.openai.com"},
-		"X-OpenAI-Internal-Basispoints-Client-Agent-Profile":  []string{"excel"},
-		"X-OpenAI-Internal-Basispoints-Client-Editor":         []string{"excel"},
-		"X-OpenAI-Internal-Basispoints-Client-Host":           []string{"office"},
-		"X-OpenAI-Internal-Basispoints-Client-Platform":       []string{"excel"},
-		"X-OpenAI-Internal-Basispoints-Client-Platform-Class": []string{"PC"},
-		"X-OpenAI-Internal-Basispoints-Client-Product":        []string{"basispoints-excel-plugin"},
-		"X-OpenAI-Internal-Basispoints-Client-Runtime":        []string{"desktop"},
-		"X-OpenAI-Internal-Basispoints-Office-Host":           []string{"Excel"},
-		"X-OpenAI-Internal-Basispoints-Office-Platform":       []string{"PC"},
-		"X-Stainless-Arch":            []string{"unknown"},
-		"X-Stainless-Lang":            []string{"js"},
-		"X-Stainless-OS":              []string{"Unknown"},
-		"X-Stainless-Package-Version": []string{"6.31.0"},
-		"X-Stainless-Retry-Count":     []string{"0"},
-		"X-Stainless-Runtime":         []string{"browser:chrome"},
-		"User-Agent":                  []string{"oai-basispoints/" + Version},
-	}
-}
-
 func (s *Service) upstreamRequest(request ExecutorRequest, body map[string]any, c credential, stream bool) (upstreamResponse, error) {
 	cfg := s.config()
 	if cfg.ResponsesURL == "" {
 		return upstreamResponse{}, fail(500, "invalid_config", "responses_url is empty")
 	}
-	response, err := s.doHTTP(request, cfg.ResponsesURL, authHeaders(c, stream), jsonBytes(body))
+	response, err := s.doHTTP(request, cfg.ResponsesURL, responseHeaders(c, stream), jsonBytes(body))
 	if err != nil {
 		return upstreamResponse{}, transportError(err, "upstream_transport", "Basis Points transport failed: ")
 	}
@@ -100,7 +64,7 @@ func (s *Service) upstreamRequest(request ExecutorRequest, body map[string]any, 
 
 func (s *Service) upstreamStream(request ExecutorRequest, body map[string]any, c credential) (upstreamStream, error) {
 	cfg := s.config()
-	stream, err := s.openHTTPStream(request, cfg.ResponsesURL, authHeaders(c, true), jsonBytes(body))
+	stream, err := s.openHTTPStream(request, cfg.ResponsesURL, responseHeaders(c, true), jsonBytes(body))
 	if err != nil {
 		return stream, transportError(err, "upstream_transport", "Basis Points stream transport failed: ")
 	}
@@ -198,13 +162,10 @@ func (d *sseDecoder) feed(chunk []byte, emit func(event, data string) error) err
 
 // 仅附加非敏感摘要，不记录对话正文、图片内容或认证信息。
 func upstreamRequestError(status int, raw []byte, body map[string]any, c credential) error {
-	redacted := string(raw)
-	for _, secret := range []string{c.AccessToken, c.AccountID, c.Email} {
-		if secret != "" {
-			redacted = strings.ReplaceAll(redacted, secret, "[REDACTED]")
-		}
-	}
-	message := redactTokenMessage(errorMessage([]byte(redacted)))
+	// Redact the raw body before errorMessage truncates it so long credentials cannot
+	// leak; redact the decoded message again for dynamic headers containing quotes or escapes.
+	message := errorMessage([]byte(c.redactMessage(string(raw))))
+	message = c.redactMessage(message)
 	images, originalDetails := 0, 0
 	var imageRefs []string
 	items, _ := body["input"].([]any)

@@ -389,15 +389,27 @@ func TestImageFileReferencesRejectConflictingURLs(t *testing.T) {
 }
 
 func TestAttachmentErrorsRedactCredentialsAndImageBytes(t *testing.T) {
-	c := credential{AccessToken: strings.Repeat("secret-token", 100), AccountID: "private-account", Email: "private@example.test"}
+	c := credential{
+		AccessToken:     strings.Repeat("secret-token", 100),
+		AccountID:       "private-account",
+		AccountUserID:   "private-user-id",
+		Email:           "private@example.test",
+		CapturedHeaders: http.Header{"User-Agent": {`Mozilla/5.0 "private-user-agent"`}},
+	}
 	image := inlineImage{mediaType: "image/png", data: []byte("private-image-bytes")}
 	encoded := base64.StdEncoding.EncodeToString(image.data)
-	raw := jsonBytes(map[string]any{"message": strings.Join([]string{c.AccessToken, c.AccountID, c.Email, encoded, string(image.data)}, " ")})
+	raw := jsonBytes(map[string]any{"message": strings.Join([]string{c.AccessToken, c.AccountID, c.AccountUserID, c.Email, c.CapturedHeaders.Get("User-Agent"), encoded, string(image.data)}, " ")})
 	message := attachmentErrorMessage(raw, c, image)
-	for _, secret := range []string{"secret-token", c.AccountID, c.Email, encoded, string(image.data)} {
+	for _, secret := range []string{"secret-token", c.AccountID, c.AccountUserID, c.Email, "private-user-agent", encoded, string(image.data)} {
 		if strings.Contains(message, secret) {
 			t.Fatal("upload error leaked private data")
 		}
+	}
+	escapedUserAgent := `Mozilla/5.0 "private\\user-agent"`
+	escaped := credential{CapturedHeaders: http.Header{"User-Agent": {escapedUserAgent}}}
+	escapedRaw := jsonBytes(map[string]any{"error": map[string]any{"message": escapedUserAgent}})
+	if message := attachmentErrorMessage(escapedRaw, escaped, image); strings.Contains(message, "private\\user-agent") {
+		t.Fatalf("escaped upload user agent leaked: %s", message)
 	}
 }
 

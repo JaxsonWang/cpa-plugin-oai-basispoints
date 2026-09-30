@@ -1,5 +1,14 @@
 # 更新日志
 
+## v0.2.10 — 2026-09-30（UTC+8）
+
+- HTTP、SSE、WebSocket 和图片上传统一从当前 OAuth 凭据生成请求头，保留完整凭据中的账号用户 ID、浏览器、Excel/Basis Points 客户端及 Stainless 运行时信息；下一次执行重新读取宿主维护的凭据，不缓存旧 token 或会话头。
+- 支持凭据中的 `captured_headers`、`headers` 及 CPA executor 的 `header:*` 运行时属性。按白名单接收字符串或字符串数组，保留非空数组项及原顺序；`captured_headers` 同名值优先，拒绝超长值和控制字符，丢弃 Cookie 与未声明字段。
+- OAuth token、账号 ID 和认证模式只取当前凭据，不从捕获头补齐或覆盖；协议头由插件生成，客户端请求头不进入上游会话。没有真实 User-Agent 时不再使用 `oai-basispoints/<version>`；不新增无契约依据的 `Copilot-Vision-Request`。
+- 增强错误脱敏，在截断前及 JSON 解码后处理 token、账号用户 ID、User-Agent 和图片数据，保留真实错误分类；403 不自动切换账号或重放，不宣称绕过上游策略限制。
+- 发布源码通过 1001 项 Go 竞态测试及子测试、10 项原版 CPA 隔离联调，以及格式、模块、vet、工作流检查和 macOS ARM64 动态库构建。既有部署另有 7 项正常链路验测通过，但未核对远端 SO 哈希或抓取真实出站头，不能视为正式发行包已部署验收，详见 `docs/validation/v0.2.10.md`。
+- 只发布插件，沿用六平台 GitHub Actions 构建及校验和流程；不修改 CPA 主程序、现有凭据或部署。安装新动态库后需重启 CPA。本版不新增 multi-agent v2 加密消息支持，也不保证消除模型产生的无效工具参数。
+
 ## v0.2.9 — 2026-09-30（UTC+8）
 
 - `credential_source` 默认改为 `host`：不再接管 Codex OAuth 文件解析，由 CPA 原生负责刷新和持久化；插件执行时读取宿主当前凭据，不缓存 token。修复虚拟认证阻断原生刷新持久化的问题。显式 `virtual` 及持久化配置仍保留，已失效的凭据不会因升级自动恢复。

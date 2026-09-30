@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,11 +32,13 @@ type authRefreshRequest struct {
 }
 
 type credential struct {
-	AccessToken string
-	AccountID   string
-	AuthMode    string
-	Email       string
-	ExpiresAt   time.Time
+	AccessToken     string
+	AccountID       string
+	AccountUserID   string
+	AuthMode        string
+	Email           string
+	CapturedHeaders http.Header
+	ExpiresAt       time.Time
 }
 
 func parseCredential(raw []byte) (credential, error) {
@@ -50,12 +53,23 @@ func parseCredential(raw []byte) (credential, error) {
 		return credential{}, fail(401, "invalid_auth", "ChatGPT OAuth credential has no access_token")
 	}
 	claims := jwtPayload(token)
+	capturedHeaders, err := capturedHeadersFromCredential(root)
+	if err != nil {
+		return credential{}, err
+	}
 	accountID := accountIDFromClaims(claims)
 	if accountID == "" {
 		accountID = findAccountID(root)
 	}
 	if accountID == "" {
 		return credential{}, fail(401, "invalid_auth", "ChatGPT OAuth credential has no account ID")
+	}
+	accountUserID := accountUserIDFromClaims(claims)
+	if accountUserID == "" {
+		accountUserID = findAccountUserID(root)
+	}
+	if accountUserID == "" {
+		accountUserID = headerValue(capturedHeaders, "X-OpenAI-Account-User-ID")
 	}
 	authMode := firstString(root, "auth_mode", "authMode")
 	if !strings.EqualFold(authMode, "chatgpt") {
@@ -70,11 +84,13 @@ func parseCredential(raw []byte) (credential, error) {
 		expiresAt = timeFromValue(rawExpiry)
 	}
 	return credential{
-		AccessToken: token,
-		AccountID:   accountID,
-		AuthMode:    authMode,
-		Email:       email,
-		ExpiresAt:   expiresAt,
+		AccessToken:     token,
+		AccountID:       accountID,
+		AccountUserID:   accountUserID,
+		AuthMode:        authMode,
+		Email:           email,
+		CapturedHeaders: capturedHeaders,
+		ExpiresAt:       expiresAt,
 	}, nil
 }
 
@@ -103,6 +119,17 @@ func findAccountID(root map[string]any) string {
 		}
 	}
 	return firstString(root, "chatgpt_account_id", "account_id", "accountId")
+}
+
+func findAccountUserID(root map[string]any) string {
+	for _, key := range []string{"userInfo", "user_info", "auth", "token_data", "tokenData", "sessionInfo", "session_info"} {
+		if nested, ok := root[key].(map[string]any); ok {
+			if id := firstString(nested, "chatgpt_account_user_id", "account_user_id", "accountUserId"); id != "" {
+				return id
+			}
+		}
+	}
+	return firstString(root, "chatgpt_account_user_id", "account_user_id", "accountUserId")
 }
 
 func firstString(object map[string]any, keys ...string) string {
@@ -149,6 +176,93 @@ func accountIDFromClaims(claims map[string]any) string {
 		}
 	}
 	return firstString(claims, "chatgpt_account_id", "account_id")
+}
+
+func accountUserIDFromClaims(claims map[string]any) string {
+	if auth, ok := claims["https://api.openai.com/auth"].(map[string]any); ok {
+		if accountUserID := firstString(auth, "chatgpt_account_user_id", "account_user_id"); accountUserID != "" {
+			return accountUserID
+		}
+	}
+	return firstString(claims, "https://api.openai.com/auth.chatgpt_account_user_id", "chatgpt_account_user_id", "account_user_id")
+}
+
+func capturedHeadersFromCredential(root map[string]any) (http.Header, error) {
+	headers, err := capturedHeadersFromValue(root["headers"])
+	if err != nil {
+		return nil, err
+	}
+	captured, err := capturedHeadersFromValue(root["captured_headers"])
+	if err != nil {
+		return nil, err
+	}
+	for name, values := range captured {
+		setHeaderExact(headers, name, values...)
+	}
+	return headers, nil
+}
+
+func capturedHeadersFromValue(value any) (http.Header, error) {
+	headers := make(http.Header)
+	object, ok := value.(map[string]any)
+	if !ok {
+		return headers, nil
+	}
+	for rawName, rawValue := range object {
+		name, allowed := capturedHeaderNames[strings.ToLower(strings.TrimSpace(rawName))]
+		if !allowed {
+			continue
+		}
+		values, ok := headerValues(rawValue)
+		if !ok {
+			continue
+		}
+		validated := make([]string, 0, len(values))
+		for _, value := range values {
+			if len(value) > maxCapturedHeaderValue || hasHeaderControl(value) {
+				return nil, fail(401, "invalid_auth", "OAuth credential contains an invalid captured header")
+			}
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			validated = append(validated, value)
+		}
+		if len(validated) == 0 {
+			continue
+		}
+		// JSON-encoded http.Header values use string arrays; preserve validated non-empty values in order.
+		setHeaderExact(headers, name, validated...)
+	}
+	return headers, nil
+}
+
+func headerValues(value any) ([]string, bool) {
+	switch value := value.(type) {
+	case string:
+		return []string{value}, true
+	case []any:
+		values := make([]string, 0, len(value))
+		for _, item := range value {
+			item, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			values = append(values, item)
+		}
+		return values, true
+	default:
+		return nil, false
+	}
+}
+
+func hasHeaderControl(value string) bool {
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func jwtExpiry(claims map[string]any) time.Time {
@@ -406,11 +520,21 @@ func credentialFromExecutor(request ExecutorRequest) (credential, error) {
 		metadata[key] = value
 	}
 	if token := stringValue(metadata["access_token"]); token != "" {
-		data := map[string]any{"access_token": token}
-		if accountID := stringValue(metadata["account_id"]); accountID != "" {
-			data["account_id"] = accountID
+		headers := map[string]any{}
+		for key, value := range request.AuthAttributes {
+			if strings.HasPrefix(strings.ToLower(key), "header:") {
+				name := strings.TrimSpace(key[len("header:"):])
+				if name != "" {
+					headers[name] = value
+				}
+			}
 		}
-		return parseCredential(jsonBytes(data))
+		if len(headers) > 0 {
+			// CPA synchronizes header:* attributes from the credential's headers field;
+			// use that runtime view while preserving captured_headers precedence.
+			metadata["headers"] = headers
+		}
+		return parseCredential(jsonBytes(metadata))
 	}
 	return credential{}, fail(401, "missing_auth", "CPA did not provide a ChatGPT OAuth credential")
 }

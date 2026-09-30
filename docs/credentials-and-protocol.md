@@ -11,6 +11,14 @@
 - `model.static` 提供宿主全局代理；凭据自身 `proxy_url` 优先，其次为宿主 `proxy-url`，都未配置才使用环境代理。`direct` / `none` 明确禁用代理。HTTP、SSE、图片上传和 WS 使用同一份有效代理策略；错误或不可达的代理不允许绕过直连。
 - 未修改的 CPA `host.http.*` ABI 不能给 self 路由重新绑定账号代理，因此 host 模式的 HTTP/SSE/附件由插件绑定本次凭据的 HTTP 客户端发送，并保留取消、超时、停用及大小限制；不是失败后的备用通道。连接池按账号与有效代理隔离，不缓存 OAuth token。该路径不经过宿主 `host.http.*` 请求日志捕获。
 
+Basis Points 请求头会按当前选中的完整 OAuth 凭据动态生成：
+
+- 每次执行都从当前 `host.auth.get` 返回的 JSON 读取 token、账号 ID、可用的 `chatgpt_account_user_id` 及允许的会话请求头；CPA 刷新并持久化后的下一次请求会自然读取新值。
+- 可选的 `captured_headers` 对象用于保存官方会话捕获的动态头；已有 CPA `headers` 对象也会按相同白名单读取。值可以是字符串，也可以是 JSON 序列化的字符串数组；数组中的空值会丢弃，其余值按原顺序保留。白名单包含 `X-OpenAI-Account-User-ID`、浏览器 UA 头、Excel/Basis Points 客户端头及 Stainless 运行时头，Cookie 和其他未声明头会被丢弃。
+- executor ABI 中的 `header:*` 属性是 CPA 从凭据 `headers` 字段同步出的运行时视图；属性存在时仅替换解析用的 `headers`，不会覆盖凭据里的 `captured_headers`。同名值由 `captured_headers` 优先，两个来源各自独有的允许头都会保留。
+- OAuth token、`ChatGPT-Account-ID`、`X-OpenAI-Account-ID` 和 `X-Basispoints-Auth-Mode` 只来自当前凭据本身，捕获头中的同名值直接丢弃、也不作为缺失字段的补充来源，避免刷新后继续发送旧身份；凭据没有真实 `User-Agent` 时不伪造 `oai-basispoints/...` 客户端身份。
+- `Accept`、`Content-Type`、`Accept-Encoding` 和 `Origin` 由插件固定生成，不能由捕获头覆盖。`Copilot-Vision-Request` 没有 Basis Points 官方客户端或原始抓包依据，因此不会因为 `input_image` 或附件请求被生成。客户端请求自身的 `Headers`、Cookie 和任意 `header:*` 之外的属性不会进入上游会话。
+
 仍可显式设置 `credential_source: virtual`：`auth.parse` 接管 Codex 文件并展开原生 Codex 与 Basis Points 两条内存认证。当前 CPA 会把两条记录都标记为 `plugin_virtual`，不持久化原生刷新结果，Basis Points 记录也不自动同步刷新的 JWT；因此不建议用于长期运行。已有 YAML 或 `data_dir/settings.json` 中显式保存的 `virtual` 不会被新默认值覆盖，需改为 `host` 或删除该字段；已有失效凭据仍需通过 CPA 更新或重新导入，新默认值不会修复已轮换失效的 token。
 
 插件不再提供独立设置页面或源认证编辑接口。请直接在 **CPA 凭证设置**中管理 `websockets` 等字段；`upstream_transport: auto` 读取当前凭据的开关，`http` 则始终禁用 WS。host 模式下一次请求读取已保存的新开关，无需维护第二份设置。
